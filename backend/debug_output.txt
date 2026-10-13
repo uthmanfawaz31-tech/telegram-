@@ -1,0 +1,43 @@
+Error loading settings: error parsing value for field "BACKEND_CORS_ORIGINS" from source "DotEnvSettingsSource"
+Traceback (most recent call last):
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\site-packages\pydantic_settings\sources\base.py", line 548, in __call__
+    field_value = self.prepare_field_value(field_name, field, field_value, value_is_complex)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\site-packages\pydantic_settings\sources\providers\env.py", line 131, in prepare_field_value
+    raise e
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\site-packages\pydantic_settings\sources\providers\env.py", line 128, in prepare_field_value
+    value = self.decode_complex_value(field_name, field, value)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\site-packages\pydantic_settings\sources\base.py", line 194, in decode_complex_value
+    return json.loads(value)
+           ^^^^^^^^^^^^^^^^^
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\json\__init__.py", line 346, in loads
+    return _default_decoder.decode(s)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\json\decoder.py", line 338, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\json\decoder.py", line 356, in raw_decode
+    raise JSONDecodeError("Expecting value", s, err.value) from None
+json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\owner\Desktop\tellgram scouting\backend\debug_settings.py", line 6, in <module>
+    from app.core.config import settings
+  File "C:\Users\owner\Desktop\tellgram scouting\backend\app\core\config.py", line 53, in <module>
+    settings = Settings()
+               ^^^^^^^^^^
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\site-packages\pydantic_settings\main.py", line 242, in __init__
+    super().__init__(**__pydantic_self__.__class__._settings_build_values(sources, init_kwargs))
+                       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\site-packages\pydantic_settings\main.py", line 465, in _settings_build_values
+    source_state = source()
+                   ^^^^^^^^
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\site-packages\pydantic_settings\sources\providers\dotenv.py", line 108, in __call__
+    data: dict[str, Any] = super().__call__()
+                           ^^^^^^^^^^^^^^^^^^
+  File "C:\Users\owner\AppData\Local\Programs\Python\Python312\Lib\site-packages\pydantic_settings\sources\base.py", line 550, in __call__
+    raise SettingsError(
+pydantic_settings.exceptions.SettingsError: error parsing value for field "BACKEND_CORS_ORIGINS" from source "DotEnvSettingsSource"

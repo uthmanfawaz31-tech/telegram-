@@ -1,8 +1,9 @@
 import asyncio
 from datetime import datetime
+import json
 import logging
 import random
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Set
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.orm import Session
@@ -15,6 +16,9 @@ from app.services.telegram_service import TelegramService
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Active background worker tracking
+active_workers: Set[int] = set()
 
 async def run_broadcast_worker(
     campaign_id: int,
@@ -31,7 +35,9 @@ async def run_broadcast_worker(
     - Timing: ~60 seconds (1 minute) interval between groups.
     - Anti-Spam: Dynamic spintax, human typing simulation, and Telegram FloodWait auto-recovery.
     - Stateful: Supports pause, resume, and cancellation from frontend in real-time.
+    - Resumable: If interrupted by network disconnect, can pick up exactly from current_index!
     """
+    active_workers.add(campaign_id)
     db = SessionLocal()
     service = TelegramService(session_string=session_string, api_id=api_id, api_hash=api_hash)
     
@@ -41,7 +47,8 @@ async def run_broadcast_worker(
             return
 
         campaign.status = "running"
-        campaign.started_at = datetime.utcnow()
+        if not campaign.started_at:
+            campaign.started_at = datetime.utcnow()
         campaign.total_targets = len(targets)
         db.commit()
 
@@ -58,7 +65,7 @@ async def run_broadcast_worker(
                 if campaign.status == "cancelled":
                     logger.info(f"Broadcast {campaign_id} cancelled.")
                     return
-                elif campaign.status == "paused":
+                elif campaign.status in ("paused", "interrupted"):
                     # Wait 5 seconds and check again
                     await asyncio.sleep(5)
                     continue
@@ -96,11 +103,9 @@ async def run_broadcast_worker(
             db.commit()
 
             # Anti-Spam timing: wait approximately 1 minute before the next group
-            # If this is not the last group, delay
             if idx < len(targets) - 1:
                 base_delay = delay_seconds if delay_seconds > 0 else 60
                 if use_jitter:
-                    # Natural human variation: 56s - 68s around 60s
                     min_delay = max(20, base_delay - 5)
                     max_delay = base_delay + 8
                     wait_time = random.uniform(min_delay, max_delay)
@@ -113,7 +118,7 @@ async def run_broadcast_worker(
                 sleep_increments = int(wait_time)
                 for _ in range(sleep_increments):
                     db.refresh(campaign)
-                    if campaign.status in ("cancelled", "paused"):
+                    if campaign.status in ("cancelled", "paused", "interrupted"):
                         break
                     await asyncio.sleep(1)
 
@@ -127,11 +132,12 @@ async def run_broadcast_worker(
         logger.error(f"Broadcast worker error in campaign {campaign_id}: {e}")
         try:
             db.refresh(campaign)
-            campaign.status = "failed"
+            campaign.status = "interrupted"
             db.commit()
         except Exception:
             pass
     finally:
+        active_workers.discard(campaign_id)
         await service.disconnect()
         db.close()
 
@@ -144,12 +150,12 @@ async def create_campaign(
     """
     Create and launch a broadcast campaign.
     Defaults to 60s (1 minute) interval between groups to prevent spam detection.
+    Stores target list permanently so it can resume after server restart or internet drop!
     """
     account = db.query(models.TelegramAccount).filter(models.TelegramAccount.is_connected == True).first()
     if not account or not account.session_string:
         raise HTTPException(status_code=400, detail="No connected Telegram account found. Please connect in Settings.")
 
-    # Target resolution: if chat_ids provided use them, else broadcast to all writable cached groups
     targets = []
     if payload.chat_ids and len(payload.chat_ids) > 0:
         requested_ids = [str(cid).strip() for cid in payload.chat_ids]
@@ -157,7 +163,6 @@ async def create_campaign(
             models.TelegramGroup.account_phone == account.phone,
             models.TelegramGroup.peer_id.in_(requested_ids)
         ).all()
-        # Map found titles
         title_map = {g.peer_id: g.title for g in groups}
         for cid in requested_ids:
             targets.append({
@@ -165,7 +170,6 @@ async def create_campaign(
                 "name": title_map.get(cid, f"Group {cid}")
             })
     else:
-        # Default: all active writable groups
         groups = db.query(models.TelegramGroup).filter(
             models.TelegramGroup.account_phone == account.phone,
             models.TelegramGroup.is_active == True,
@@ -183,7 +187,6 @@ async def create_campaign(
             detail="No target groups selected or found. Please sync groups first."
         )
 
-    # 1-minute default delay as requested by user
     delay_sec = payload.delay_seconds if (payload.delay_seconds is not None and payload.delay_seconds >= 10) else 60
 
     db_campaign = models.Campaign(
@@ -198,6 +201,7 @@ async def create_campaign(
         current_index=0,
         delay_seconds=delay_sec,
         use_jitter=bool(payload.use_jitter),
+        target_chat_ids=json.dumps(targets),
         created_at=datetime.utcnow()
     )
     db.add(db_campaign)
@@ -226,18 +230,27 @@ def list_campaigns(
     db: Session = Depends(get_db)
 ) -> Any:
     """
-    List campaigns with real-time progress status.
+    List campaigns with real-time status.
+    Auto-detects interrupted campaigns (if server restarted while a campaign was marked running).
     """
-    return db.query(models.Campaign).order_by(models.Campaign.created_at.desc()).offset(offset).limit(limit).all()
+    campaigns = db.query(models.Campaign).order_by(models.Campaign.created_at.desc()).offset(offset).limit(limit).all()
+    
+    # If a campaign is marked 'running' but no background worker is alive, mark as 'interrupted' so user can resume!
+    for c in campaigns:
+        if c.status == "running" and c.id not in active_workers:
+            c.status = "interrupted"
+            db.commit()
+
+    return campaigns
 
 @router.get("/{campaign_id}", response_model=schemas.CampaignResponse)
 def get_campaign(campaign_id: int, db: Session = Depends(get_db)) -> Any:
-    """
-    Get detailed status of a specific campaign including progress and logs.
-    """
     campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if campaign.status == "running" and campaign.id not in active_workers:
+        campaign.status = "interrupted"
+        db.commit()
     return campaign
 
 @router.post("/{campaign_id}/pause", response_model=schemas.CampaignResponse)
@@ -245,21 +258,60 @@ def pause_campaign(campaign_id: int, db: Session = Depends(get_db)) -> Any:
     campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if campaign.status == "running":
-        campaign.status = "paused"
-        db.commit()
-        db.refresh(campaign)
+    campaign.status = "paused"
+    db.commit()
+    db.refresh(campaign)
     return campaign
 
 @router.post("/{campaign_id}/resume", response_model=schemas.CampaignResponse)
-def resume_campaign(campaign_id: int, db: Session = Depends(get_db)) -> Any:
+async def resume_campaign(
+    campaign_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+) -> Any:
+    """
+    Resume an interrupted or paused campaign from the exact target it stopped at!
+    """
     campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if campaign.status == "paused":
-        campaign.status = "running"
-        db.commit()
-        db.refresh(campaign)
+
+    account = db.query(models.TelegramAccount).filter(models.TelegramAccount.is_connected == True).first()
+    if not account or not account.session_string:
+        raise HTTPException(status_code=400, detail="Telegram account not connected")
+
+    campaign.status = "running"
+    db.commit()
+    db.refresh(campaign)
+
+    # If worker is NOT running in background, re-launch it with saved targets!
+    if campaign.id not in active_workers:
+        try:
+            targets = json.loads(campaign.target_chat_ids) if campaign.target_chat_ids else []
+        except Exception:
+            targets = []
+
+        if not targets:
+            # Reconstruct from groups
+            groups = db.query(models.TelegramGroup).filter(
+                models.TelegramGroup.account_phone == account.phone,
+                models.TelegramGroup.is_active == True,
+                models.TelegramGroup.can_send_messages == True
+            ).all()
+            targets = [{"id": g.peer_id, "name": g.title} for g in groups]
+
+        background_tasks.add_task(
+            run_broadcast_worker,
+            campaign.id,
+            account.session_string,
+            targets,
+            campaign.message_text,
+            campaign.delay_seconds or 60,
+            bool(campaign.use_jitter),
+            account.api_id,
+            account.api_hash
+        )
+
     return campaign
 
 @router.post("/{campaign_id}/stop", response_model=schemas.CampaignResponse)
@@ -267,11 +319,27 @@ def stop_campaign(campaign_id: int, db: Session = Depends(get_db)) -> Any:
     campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if campaign.status in ("running", "pending", "paused"):
-        campaign.status = "cancelled"
-        db.commit()
-        db.refresh(campaign)
+    campaign.status = "cancelled"
+    db.commit()
+    db.refresh(campaign)
     return campaign
+
+@router.delete("/{campaign_id}")
+def delete_campaign(campaign_id: int, db: Session = Depends(get_db)) -> Any:
+    """
+    Delete a campaign and its delivery logs.
+    """
+    campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # If actively running, cancel it first
+    campaign.status = "cancelled"
+    db.commit()
+
+    db.delete(campaign)
+    db.commit()
+    return {"msg": "Campaign deleted successfully"}
 
 @router.get("/{campaign_id}/logs", response_model=List[schemas.BroadcastLogResponse])
 def get_campaign_logs(

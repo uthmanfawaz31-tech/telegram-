@@ -216,8 +216,13 @@ async def telegram_login(
                 "id": getattr(user, 'id', None),
                 "first_name": getattr(user, 'first_name', None),
                 "username": getattr(user, 'username', None),
+                "phone": phone,
+                "api_id": account.api_id,
+                "api_hash": account.api_hash
             },
-            "session_string": session_str
+            "session_string": session_str,
+            "api_id": account.api_id,
+            "api_hash": account.api_hash
         }
 
     except errors.SessionPasswordNeededError:
@@ -285,10 +290,106 @@ async def verify_2fa(
                 "id": getattr(user, 'id', None),
                 "first_name": getattr(user, 'first_name', None),
                 "username": getattr(user, 'username', None),
+                "phone": phone,
+                "api_id": account.api_id,
+                "api_hash": account.api_hash
             },
-            "session_string": session_str
+            "session_string": session_str,
+            "api_id": account.api_id,
+            "api_hash": account.api_hash
         }
     except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.post("/restore-session")
+async def restore_session(
+    payload: schemas.RestoreSessionRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+) -> Any:
+    """
+    Restore Telegram session automatically using saved session_string.
+    Prevents unexpected logouts when backend restarts or reconnects.
+    """
+    session_str = payload.session_string.strip()
+    api_id = payload.api_id.strip() if payload.api_id else settings.TELEGRAM_API_ID
+    api_hash = payload.api_hash.strip() if payload.api_hash else settings.TELEGRAM_API_HASH
+
+    if not session_str:
+        raise HTTPException(status_code=400, detail="session_string is required")
+
+    service = TelegramService(session_string=session_str, api_id=api_id, api_hash=api_hash)
+    try:
+        user = await service.get_me()
+        if not user:
+            raise HTTPException(status_code=401, detail="Session expired or invalid")
+    finally:
+        await service.disconnect()
+
+    try:
+
+        phone = payload.phone or getattr(user, 'phone', '')
+        account = db.query(models.TelegramAccount).filter(
+            (models.TelegramAccount.phone == phone) if phone else (models.TelegramAccount.session_string == session_str)
+        ).first()
+
+        if not account:
+            account = models.TelegramAccount(
+                phone=phone or str(getattr(user, 'id', '')),
+                session_string=session_str,
+                api_id=str(api_id) if api_id else settings.TELEGRAM_API_ID,
+                api_hash=api_hash or settings.TELEGRAM_API_HASH,
+                first_name=getattr(user, 'first_name', None),
+                last_name=getattr(user, 'last_name', None),
+                username=getattr(user, 'username', None),
+                telegram_id=str(getattr(user, 'id', '')),
+                is_connected=True,
+                last_active_at=datetime.utcnow()
+            )
+            db.add(account)
+        else:
+            account.session_string = session_str
+            account.is_connected = True
+            account.first_name = getattr(user, 'first_name', account.first_name)
+            account.username = getattr(user, 'username', account.username)
+            account.telegram_id = str(getattr(user, 'id', account.telegram_id or ''))
+            account.last_active_at = datetime.utcnow()
+            if api_id:
+                account.api_id = str(api_id)
+            if api_hash:
+                account.api_hash = api_hash
+
+        db.commit()
+
+        # Trigger group sync in background
+        background_tasks.add_task(
+            sync_groups_for_account,
+            session_str,
+            account.phone,
+            db,
+            account.api_id,
+            account.api_hash
+        )
+
+        total_groups = db.query(models.TelegramGroup).filter(
+            models.TelegramGroup.account_phone == account.phone,
+            models.TelegramGroup.is_active == True
+        ).count()
+
+        return {
+            "is_connected": True,
+            "account": {
+                "id": account.id,
+                "phone": account.phone,
+                "first_name": account.first_name,
+                "username": account.username,
+                "telegram_id": account.telegram_id,
+                "api_id": account.api_id
+            },
+            "total_groups": total_groups
+        }
+    except Exception as e:
+        logger.error(f"Restore session error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.post("/disconnect")

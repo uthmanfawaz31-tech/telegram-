@@ -58,6 +58,7 @@ class Campaign(Base):
     current_index = Column(Integer, default=0)
     delay_seconds = Column(Integer, default=60) # 1-minute default timing
     use_jitter = Column(Boolean, default=True) # human-like timing jitter
+    target_chat_ids = Column(Text, nullable=True) # JSON list of target chat IDs for persistent resume
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)

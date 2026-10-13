@@ -22,13 +22,26 @@ export default function Home() {
   const [successMsg, setSuccessMsg] = useState("");
 
   useEffect(() => {
+    // Pre-populate credentials from localStorage if present
+    const savedApiId = localStorage.getItem("tg_api_id");
+    const savedApiHash = localStorage.getItem("tg_api_hash");
+    const savedPhone = localStorage.getItem("tg_phone");
+    if (savedApiId) setApiId(savedApiId);
+    if (savedApiHash) setApiHash(savedApiHash);
+    if (savedPhone) setPhoneNumber(savedPhone);
+
+    const savedSession = localStorage.getItem("tg_session");
+    if (savedSession && savedSession !== "connected") {
+      router.push("/dashboard");
+      return;
+    }
+
     const checkAccount = async () => {
       try {
         const res = await fetch(`${API_BASE}/telegram/account`);
         if (res.ok) {
           const data = await res.json();
           if (data.is_connected) {
-            localStorage.setItem("tg_session", "connected");
             if (data.account) {
               localStorage.setItem("tg_user", JSON.stringify(data.account));
             }
@@ -53,6 +66,11 @@ export default function Home() {
       setLoading(false);
       return;
     }
+
+    // Persist entered credentials immediately
+    if (apiId.trim()) localStorage.setItem("tg_api_id", apiId.trim());
+    if (apiHash.trim()) localStorage.setItem("tg_api_hash", apiHash.trim());
+    localStorage.setItem("tg_phone", phoneNumber.trim());
 
     try {
       const response = await fetch(`${API_BASE}/telegram/send-code`, {
@@ -113,6 +131,14 @@ export default function Home() {
       if (data.user) {
         localStorage.setItem("tg_user", JSON.stringify(data.user));
       }
+      if (data.api_id || apiId.trim()) {
+        localStorage.setItem("tg_api_id", data.api_id || apiId.trim());
+      }
+      if (data.api_hash || apiHash.trim()) {
+        localStorage.setItem("tg_api_hash", data.api_hash || apiHash.trim());
+      }
+      localStorage.setItem("tg_phone", phoneNumber.trim());
+
       window.location.href = "/dashboard";
     } catch (err: any) {
       setError(err.message || "Login failed");
@@ -143,6 +169,14 @@ export default function Home() {
       if (data.user) {
         localStorage.setItem("tg_user", JSON.stringify(data.user));
       }
+      if (data.api_id || apiId.trim()) {
+        localStorage.setItem("tg_api_id", data.api_id || apiId.trim());
+      }
+      if (data.api_hash || apiHash.trim()) {
+        localStorage.setItem("tg_api_hash", data.api_hash || apiHash.trim());
+      }
+      localStorage.setItem("tg_phone", phoneNumber.trim());
+
       window.location.href = "/dashboard";
     } catch (err: any) {
       setError(err.message || "2FA verification failed");

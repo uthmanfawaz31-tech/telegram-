@@ -109,9 +109,11 @@ export default function Dashboard() {
     // Active campaign polling
     const [activeCampaign, setActiveCampaign] = useState<Campaign | null>(null);
 
+    const [restoringSession, setRestoringSession] = useState(false);
+
     useEffect(() => {
-        const session = localStorage.getItem("tg_session");
-        const userData = localStorage.getItem("tg_user");
+        const session = typeof window !== "undefined" ? localStorage.getItem("tg_session") : null;
+        const userData = typeof window !== "undefined" ? localStorage.getItem("tg_user") : null;
         if (!session) {
             router.push("/");
             return;
@@ -125,19 +127,50 @@ export default function Dashboard() {
     }, [router]);
 
     const fetchAccount = async () => {
+        const session = typeof window !== "undefined" ? localStorage.getItem("tg_session") : null;
+        const apiId = typeof window !== "undefined" ? localStorage.getItem("tg_api_id") : null;
+        const apiHash = typeof window !== "undefined" ? localStorage.getItem("tg_api_hash") : null;
+        const phone = typeof window !== "undefined" ? localStorage.getItem("tg_phone") : null;
+
         try {
             const res = await fetch(`${API_BASE}/telegram/account`);
             if (res.ok) {
                 const data = await res.json();
-                if (!data.is_connected) {
-                    localStorage.removeItem("tg_session");
-                    router.push("/");
-                    return;
-                }
-                setAccountData(data);
-                if (data.account) {
+                if (data.is_connected && data.account) {
+                    setAccountData(data);
                     setUser(data.account);
                     localStorage.setItem("tg_user", JSON.stringify(data.account));
+                    return;
+                }
+            }
+
+            // If backend container restarted or lost connection, restore session automatically
+            // This prevents involuntary logouts and keeps user logged in indefinitely!
+            if (session && session !== "connected") {
+                setRestoringSession(true);
+                try {
+                    const restoreRes = await fetch(`${API_BASE}/telegram/restore-session`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            session_string: session,
+                            api_id: apiId || undefined,
+                            api_hash: apiHash || undefined,
+                            phone: phone || undefined,
+                        }),
+                    });
+                    if (restoreRes.ok) {
+                        const restoredData = await restoreRes.json();
+                        setAccountData(restoredData);
+                        if (restoredData.account) {
+                            setUser(restoredData.account);
+                            localStorage.setItem("tg_user", JSON.stringify(restoredData.account));
+                        }
+                    }
+                } catch (restoreErr) {
+                    console.error("Session restore attempt failed:", restoreErr);
+                } finally {
+                    setRestoringSession(false);
                 }
             }
         } catch (e) {
@@ -145,21 +178,22 @@ export default function Dashboard() {
         }
     };
 
-    // Poll for active campaign status every 4 seconds
+    // Poll for active or interrupted campaign status every 3 seconds
     useEffect(() => {
         const pollCampaigns = async () => {
             try {
-                const res = await fetch(`${API_BASE}/campaigns?limit=5`);
+                const res = await fetch(`${API_BASE}/campaigns?limit=10`);
                 if (res.ok) {
                     const data: Campaign[] = await res.json();
-                    const runningOrPaused = data.find(c => c.status === "running" || c.status === "paused");
-                    setActiveCampaign(runningOrPaused || null);
+                    // Detect running, paused, OR interrupted campaign
+                    const ongoing = data.find(c => c.status === "running" || c.status === "paused" || c.status === "interrupted");
+                    setActiveCampaign(ongoing || null);
                 }
             } catch (e) {}
         };
 
         pollCampaigns();
-        const interval = setInterval(pollCampaigns, 4000);
+        const interval = setInterval(pollCampaigns, 3000);
         return () => clearInterval(interval);
     }, []);
 
@@ -181,11 +215,16 @@ export default function Dashboard() {
     };
 
     const handleLogout = async () => {
+        if (!confirm("Are you sure you want to log out of your Telegram account?")) {
+            return;
+        }
         try {
             await fetch(`${API_BASE}/telegram/disconnect`, { method: "POST" });
         } catch (e) {}
+        // Explicit logout only: remove active session and user
         localStorage.removeItem("tg_session");
         localStorage.removeItem("tg_user");
+        // Keep templates backup and inputs intact in database/localStorage!
         router.push("/");
     };
 
@@ -368,65 +407,119 @@ export default function Dashboard() {
                     </div>
                 </header>
 
-                {/* Active Campaign Monitor Banner */}
+                {/* Background Session Restoring Indicator */}
+                {restoringSession && (
+                    <div className="mb-4 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs flex items-center space-x-2">
+                        <RefreshCw className="w-4 h-4 animate-spin flex-shrink-0" />
+                        <span>Reconnecting Telegram session automatically... Your projects and templates are preserved.</span>
+                    </div>
+                )}
+
+                {/* Active / Ongoing / Interrupted Campaign Monitor Banner */}
                 {activeCampaign && (
-                    <div className="mb-8 p-5 rounded-2xl bg-blue-950/40 border border-blue-500/30 backdrop-blur-md shadow-2xl space-y-4">
+                    <div className={`mb-8 p-5 rounded-2xl border backdrop-blur-md shadow-2xl space-y-4 ${
+                        activeCampaign.status === "interrupted"
+                            ? "bg-amber-950/40 border-amber-500/40 shadow-amber-950/20"
+                            : activeCampaign.status === "paused"
+                            ? "bg-yellow-950/40 border-yellow-500/30"
+                            : "bg-blue-950/40 border-blue-500/30"
+                    }`}>
                         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                             <div className="flex items-center space-x-3">
-                                <div className="p-2.5 rounded-xl bg-blue-500/20 text-blue-400">
-                                    <Send className="w-5 h-5 animate-pulse" />
+                                <div className={`p-2.5 rounded-xl ${
+                                    activeCampaign.status === "interrupted"
+                                        ? "bg-amber-500/20 text-amber-400"
+                                        : activeCampaign.status === "paused"
+                                        ? "bg-yellow-500/20 text-yellow-400"
+                                        : "bg-blue-500/20 text-blue-400 animate-pulse"
+                                }`}>
+                                    <Send className="w-5 h-5" />
                                 </div>
                                 <div>
                                     <div className="flex items-center space-x-2">
                                         <h3 className="font-bold text-base text-white">{activeCampaign.name}</h3>
-                                        <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase ${activeCampaign.status === "running" ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"}`}>
-                                            {activeCampaign.status}
+                                        <span className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wider ${
+                                            activeCampaign.status === "running"
+                                                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                                                : activeCampaign.status === "interrupted"
+                                                ? "bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse"
+                                                : "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"
+                                        }`}>
+                                            {activeCampaign.status === "interrupted" ? "Interrupted Project" : activeCampaign.status}
                                         </span>
                                     </div>
                                     <p className="text-xs text-slate-400 mt-0.5">
-                                        Current target: <span className="text-blue-300 font-medium">{activeCampaign.current_target_name || "Initiating..."}</span> • Timing: ~{activeCampaign.delay_seconds}s (1 min spacing)
+                                        {activeCampaign.status === "interrupted" ? (
+                                            <span className="text-amber-300 font-medium">
+                                                Broadcast was stopped due to network drop or restart. Ready to continue from group #{activeCampaign.processed_count + 1} of {activeCampaign.total_targets}.
+                                            </span>
+                                        ) : (
+                                            <>Current target: <span className="text-blue-300 font-medium">{activeCampaign.current_target_name || "Initiating..."}</span> • Timing: ~{activeCampaign.delay_seconds}s (1 min spacing)</>
+                                        )}
                                     </p>
                                 </div>
                             </div>
 
                             <div className="flex items-center space-x-2">
-                                {activeCampaign.status === "running" ? (
+                                {/* Continue / Resume Button */}
+                                {(activeCampaign.status === "interrupted" || activeCampaign.status === "paused") && (
+                                    <button
+                                        onClick={async () => {
+                                            try {
+                                                const res = await fetch(`${API_BASE}/campaigns/${activeCampaign.id}/resume`, { method: "POST" });
+                                                if (!res.ok) throw new Error("Failed to resume broadcast");
+                                                const updated = await res.json();
+                                                setActiveCampaign(updated);
+                                            } catch (err: any) {
+                                                alert(err.message || "Failed to continue campaign");
+                                            }
+                                        }}
+                                        className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center space-x-1.5 transition-all shadow-lg shadow-emerald-900/30 active:scale-95"
+                                        title="Continue sending to the remaining groups"
+                                    >
+                                        <Play className="w-3.5 h-3.5" />
+                                        <span>Continue Broadcast</span>
+                                    </button>
+                                )}
+
+                                {/* Pause Button */}
+                                {activeCampaign.status === "running" && (
                                     <button
                                         onClick={async () => {
                                             await fetch(`${API_BASE}/campaigns/${activeCampaign.id}/pause`, { method: "POST" });
+                                            const res = await fetch(`${API_BASE}/campaigns/${activeCampaign.id}`);
+                                            if (res.ok) setActiveCampaign(await res.json());
                                         }}
                                         className="px-3.5 py-1.5 rounded-lg bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/20 text-yellow-400 text-xs font-semibold flex items-center space-x-1.5 transition-all"
                                     >
                                         <Pause className="w-3.5 h-3.5" />
                                         <span>Pause</span>
                                     </button>
-                                ) : (
-                                    <button
-                                        onClick={async () => {
-                                            await fetch(`${API_BASE}/campaigns/${activeCampaign.id}/resume`, { method: "POST" });
-                                        }}
-                                        className="px-3.5 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 text-emerald-400 text-xs font-semibold flex items-center space-x-1.5 transition-all"
-                                    >
-                                        <Play className="w-3.5 h-3.5" />
-                                        <span>Resume</span>
-                                    </button>
                                 )}
 
+                                {/* Delete / Stop Project Button */}
                                 <button
                                     onClick={async () => {
-                                        if (confirm("Stop and cancel this broadcast?")) {
-                                            await fetch(`${API_BASE}/campaigns/${activeCampaign.id}/stop`, { method: "POST" });
+                                        if (confirm(`Do you want to delete this project ("${activeCampaign.name}")? This will remove the campaign.`)) {
+                                            try {
+                                                await fetch(`${API_BASE}/campaigns/${activeCampaign.id}`, { method: "DELETE" });
+                                                setActiveCampaign(null);
+                                            } catch (e) {
+                                                alert("Failed to delete project");
+                                            }
                                         }
                                     }}
-                                    className="px-3.5 py-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-semibold flex items-center space-x-1.5 transition-all"
+                                    className="px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-semibold flex items-center space-x-1.5 transition-all"
+                                    title="Delete this project"
                                 >
-                                    <StopCircle className="w-3.5 h-3.5" />
-                                    <span>Stop</span>
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                    <span>Delete Project</span>
                                 </button>
 
+                                {/* Audit Logs Button */}
                                 <button
                                     onClick={() => setInspectCampaignId(activeCampaign.id)}
-                                    className="px-3.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-semibold flex items-center space-x-1.5 transition-all"
+                                    className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-semibold flex items-center space-x-1.5 transition-all"
                                 >
                                     <Eye className="w-3.5 h-3.5" />
                                     <span>Logs</span>
@@ -994,11 +1087,51 @@ function TemplatesView({
         try {
             const res = await fetch(`${API_BASE}/templates`);
             if (res.ok) {
-                const data = await res.json();
-                setTemplates(data);
+                const data: BroadcastTemplate[] = await res.json();
+                if (data.length > 0) {
+                    setTemplates(data);
+                    // Persist backup so templates survive database reset or logout
+                    localStorage.setItem("tg_templates_backup", JSON.stringify(data));
+                    return;
+                }
+
+                // If DB is empty, auto-restore from local backup
+                const backupRaw = localStorage.getItem("tg_templates_backup");
+                if (backupRaw) {
+                    try {
+                        const backup: BroadcastTemplate[] = JSON.parse(backupRaw);
+                        if (Array.isArray(backup) && backup.length > 0) {
+                            for (const tpl of backup) {
+                                await fetch(`${API_BASE}/templates/`, {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({
+                                        name: tpl.name,
+                                        message_text: tpl.message_text,
+                                        tags: tpl.tags
+                                    })
+                                });
+                            }
+                            const refRes = await fetch(`${API_BASE}/templates`);
+                            if (refRes.ok) {
+                                const refData = await refRes.json();
+                                setTemplates(refData);
+                                localStorage.setItem("tg_templates_backup", JSON.stringify(refData));
+                                return;
+                            }
+                        }
+                    } catch (err) {}
+                }
+                setTemplates([]);
             }
         } catch (e) {
-            console.error(e);
+            // Offline fallback from local backup
+            const backupRaw = localStorage.getItem("tg_templates_backup");
+            if (backupRaw) {
+                try {
+                    setTemplates(JSON.parse(backupRaw));
+                } catch (err) {}
+            }
         } finally {
             setLoading(false);
         }
@@ -1012,6 +1145,9 @@ function TemplatesView({
         if (!confirm("Are you sure you want to delete this template?")) return;
         try {
             await fetch(`${API_BASE}/templates/${id}`, { method: "DELETE" });
+            const updated = templates.filter(t => t.id !== id);
+            setTemplates(updated);
+            localStorage.setItem("tg_templates_backup", JSON.stringify(updated));
             fetchTemplates();
         } catch (e) {}
     };
@@ -1141,13 +1277,31 @@ function BroadcastsView({ onInspectLogs }: { onInspectLogs: (campaignId: number)
                         className="blue-glass p-5 rounded-2xl border border-white/5 hover:border-white/10 transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
                     >
                         <div className="flex items-center space-x-4">
-                            <div className={`p-3 rounded-xl ${camp.status === "completed" ? "bg-emerald-500/10 text-emerald-400" : camp.status === "running" ? "bg-blue-500/10 text-blue-400 animate-pulse" : "bg-slate-500/10 text-slate-400"}`}>
+                            <div className={`p-3 rounded-xl ${
+                                camp.status === "completed" 
+                                    ? "bg-emerald-500/10 text-emerald-400" 
+                                    : camp.status === "running" 
+                                    ? "bg-blue-500/10 text-blue-400 animate-pulse" 
+                                    : camp.status === "interrupted"
+                                    ? "bg-amber-500/10 text-amber-400"
+                                    : "bg-slate-500/10 text-slate-400"
+                            }`}>
                                 <Send className="w-5 h-5" />
                             </div>
                             <div>
                                 <div className="flex items-center space-x-2">
                                     <h4 className="font-bold text-base text-white">{camp.name}</h4>
-                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${camp.status === "completed" ? "bg-emerald-500/20 text-emerald-400" : camp.status === "running" ? "bg-blue-500/20 text-blue-400" : "bg-white/10 text-slate-400"}`}>
+                                    <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
+                                        camp.status === "completed" 
+                                            ? "bg-emerald-500/20 text-emerald-400" 
+                                            : camp.status === "running" 
+                                            ? "bg-blue-500/20 text-blue-400" 
+                                            : camp.status === "interrupted"
+                                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                            : camp.status === "paused"
+                                            ? "bg-yellow-500/20 text-yellow-400"
+                                            : "bg-white/10 text-slate-400"
+                                    }`}>
                                         {camp.status}
                                     </span>
                                 </div>
@@ -1158,7 +1312,7 @@ function BroadcastsView({ onInspectLogs }: { onInspectLogs: (campaignId: number)
                             </div>
                         </div>
 
-                        <div className="flex items-center space-x-4">
+                        <div className="flex items-center space-x-3">
                             <div className="text-right hidden sm:block">
                                 <p className="text-[10px] text-slate-500 uppercase">Created</p>
                                 <p className="text-xs font-semibold">{new Date(camp.created_at).toLocaleDateString()}</p>
@@ -1166,20 +1320,62 @@ function BroadcastsView({ onInspectLogs }: { onInspectLogs: (campaignId: number)
 
                             <button
                                 onClick={() => onInspectLogs(camp.id)}
-                                className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-semibold flex items-center space-x-1.5 transition-all"
+                                className="px-3 py-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-xs font-semibold flex items-center space-x-1.5 transition-all"
                             >
                                 <Eye className="w-3.5 h-3.5" />
-                                <span>Audit Logs</span>
+                                <span>Logs</span>
                             </button>
 
-                            {(camp.status === "running" || camp.status === "pending" || camp.status === "paused") && (
+                            {(camp.status === "interrupted" || camp.status === "paused") && (
                                 <button
-                                    onClick={() => handleStop(camp.id)}
-                                    className="px-3.5 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-semibold transition-all"
+                                    onClick={async () => {
+                                        try {
+                                            await fetch(`${API_BASE}/campaigns/${camp.id}/resume`, { method: "POST" });
+                                            fetchCampaigns();
+                                        } catch (e) {
+                                            alert("Failed to resume campaign");
+                                        }
+                                    }}
+                                    className="px-3 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-400 text-xs font-semibold flex items-center space-x-1.5 transition-all"
+                                    title="Continue campaign"
                                 >
-                                    Stop
+                                    <Play className="w-3.5 h-3.5" />
+                                    <span>Continue</span>
                                 </button>
                             )}
+
+                            {camp.status === "running" && (
+                                <>
+                                    <button
+                                        onClick={async () => {
+                                            await fetch(`${API_BASE}/campaigns/${camp.id}/pause`, { method: "POST" });
+                                            fetchCampaigns();
+                                        }}
+                                        className="px-3 py-2 rounded-xl bg-yellow-500/10 hover:bg-yellow-500/20 border border-yellow-500/20 text-yellow-400 text-xs font-semibold transition-all"
+                                    >
+                                        Pause
+                                    </button>
+                                    <button
+                                        onClick={() => handleStop(camp.id)}
+                                        className="px-3 py-2 rounded-xl bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 text-red-400 text-xs font-semibold transition-all"
+                                    >
+                                        Stop
+                                    </button>
+                                </>
+                            )}
+
+                            <button
+                                onClick={async () => {
+                                    if (confirm(`Do you want to delete project "${camp.name}"?`)) {
+                                        await fetch(`${API_BASE}/campaigns/${camp.id}`, { method: "DELETE" });
+                                        fetchCampaigns();
+                                    }
+                                }}
+                                className="p-2 rounded-xl bg-white/5 hover:bg-red-500/20 text-slate-400 hover:text-red-400 border border-white/5 transition-all"
+                                title="Delete Project"
+                            >
+                                <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                         </div>
                     </div>
                 ))
@@ -1329,13 +1525,38 @@ function NewCampaignModal({
     onClose: () => void;
     initialSelectedIds?: string[];
 }) {
-    const [name, setName] = useState("");
-    const [message, setMessage] = useState("");
-    const [delaySeconds, setDelaySeconds] = useState(60); // 1 minute default
+    const [name, setName] = useState(() => {
+        if (typeof window !== "undefined") {
+            return localStorage.getItem("tg_draft_campaign_name") || "";
+        }
+        return "";
+    });
+    const [message, setMessage] = useState(() => {
+        if (typeof window !== "undefined") {
+            return localStorage.getItem("tg_draft_campaign_message") || "";
+        }
+        return "";
+    });
+    const [delaySeconds, setDelaySeconds] = useState(() => {
+        if (typeof window !== "undefined") {
+            const saved = localStorage.getItem("tg_draft_campaign_delay");
+            return saved ? Number(saved) : 60;
+        }
+        return 60;
+    });
     const [useJitter, setUseJitter] = useState(true);
     const [templates, setTemplates] = useState<BroadcastTemplate[]>([]);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
+
+    // Persist draft inputs so user inputs are never lost
+    useEffect(() => {
+        if (typeof window !== "undefined") {
+            if (name) localStorage.setItem("tg_draft_campaign_name", name);
+            if (message) localStorage.setItem("tg_draft_campaign_message", message);
+            localStorage.setItem("tg_draft_campaign_delay", String(delaySeconds));
+        }
+    }, [name, message, delaySeconds]);
 
     // Load templates for quick selection
     useEffect(() => {
@@ -1558,6 +1779,20 @@ function TemplateEditorModal({
                 })
             });
             if (!res.ok) throw new Error("Failed to save template");
+            const savedItem = await res.json();
+            
+            // Save to localStorage backup so it survives logout and DB wipes
+            try {
+                const backupRaw = localStorage.getItem("tg_templates_backup");
+                let backup: BroadcastTemplate[] = backupRaw ? JSON.parse(backupRaw) : [];
+                if (template) {
+                    backup = backup.map(t => t.id === template.id ? savedItem : t);
+                } else {
+                    backup.push(savedItem);
+                }
+                localStorage.setItem("tg_templates_backup", JSON.stringify(backup));
+            } catch (backupErr) {}
+
             onClose();
             window.location.reload();
         } catch (err: any) {

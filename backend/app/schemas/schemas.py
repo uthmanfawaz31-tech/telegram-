@@ -22,6 +22,12 @@ class TwoFactorRequest(BaseModel):
     phone: str
     password: str
 
+class RestoreSessionRequest(BaseModel):
+    session_string: str
+    phone: Optional[str] = None
+    api_id: Optional[str] = None
+    api_hash: Optional[str] = None
+
 class TelegramAccountResponse(BaseModel):
     id: int
     phone: str
@@ -120,6 +126,7 @@ class CampaignResponse(BaseModel):
     current_index: int
     delay_seconds: int
     use_jitter: bool
+    target_chat_ids: Optional[str] = None
     scheduled_at: Optional[datetime] = None
     created_at: datetime
     started_at: Optional[datetime] = None

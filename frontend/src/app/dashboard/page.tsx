@@ -37,7 +37,7 @@ import FadeIn from "@/components/FadeIn";
 import React, { useEffect, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://telepro-back.onrender.com/api/v1";
 
 interface TelegramUser {
     id?: number;

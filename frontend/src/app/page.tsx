@@ -3,27 +3,25 @@
 import React, { useEffect, useState } from "react";
 import Background from "@/components/Background";
 import FadeIn from "@/components/FadeIn";
-import { MessageSquare, Shield, Zap, TrendingUp, Key, Lock, ArrowRight, CheckCircle2 } from "lucide-react";
+import { Shield, Zap, TrendingUp, Key, ArrowRight, CheckCircle2, AlertCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "https://telepro-back.onrender.com/api/v1";
 
 export default function Home() {
   const router = useRouter();
   const [phoneNumber, setPhoneNumber] = useState("");
   const [apiId, setApiId] = useState("");
   const [apiHash, setApiHash] = useState("");
-  const [showAdvancedApi, setShowAdvancedApi] = useState(false);
   const [otp, setOtp] = useState("");
   const [twoFactorPassword, setTwoFactorPassword] = useState("");
-  const [step, setStep] = useState(1); // 1: Phone, 2: OTP, 3: 2FA
+  const [step, setStep] = useState(1); // 1: Credentials & Phone, 2: OTP, 3: 2FA
   const [phoneCodeHash, setPhoneCodeHash] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [successMsg, setSuccessMsg] = useState("");
 
   useEffect(() => {
-    // Check if account already connected on backend
     const checkAccount = async () => {
       try {
         const res = await fetch(`${API_BASE}/telegram/account`);
@@ -38,7 +36,7 @@ export default function Home() {
           }
         }
       } catch (e) {
-        // API might be waking up
+        // Ignore background probe
       }
     };
     checkAccount();
@@ -49,6 +47,13 @@ export default function Home() {
     setLoading(true);
     setError("");
     setSuccessMsg("");
+
+    if (!phoneNumber.trim()) {
+      setError("Please enter your phone number.");
+      setLoading(false);
+      return;
+    }
+
     try {
       const response = await fetch(`${API_BASE}/telegram/send-code`, {
         method: "POST",
@@ -59,13 +64,21 @@ export default function Home() {
           api_hash: apiHash.trim() || undefined,
         }),
       });
+
       const data = await response.json();
-      if (!response.ok) throw new Error(data.detail || "Failed to send code");
+      if (!response.ok) {
+        throw new Error(data.detail || "Failed to send verification code");
+      }
+
       setPhoneCodeHash(data.phone_code_hash);
-      setSuccessMsg("Verification code sent to your Telegram app/SMS!");
+      setSuccessMsg("Verification code sent to your Telegram app / SMS!");
       setStep(2);
     } catch (err: any) {
-      setError(err.message);
+      if (err.message && err.message.includes("Failed to fetch")) {
+        setError("Network connection issue: could not reach backend API. If you haven't entered your API ID and Hash, please fill them in below.");
+      } else {
+        setError(err.message || "Failed to send code. Please verify credentials.");
+      }
     } finally {
       setLoading(false);
     }
@@ -90,7 +103,7 @@ export default function Home() {
 
       if (data.status === "2fa_required") {
         setStep(3);
-        setSuccessMsg("This account has 2-Step Verification enabled. Enter your password to continue.");
+        setSuccessMsg("Two-Step Verification (2FA) is enabled on this account. Enter your password.");
         return;
       }
 
@@ -102,7 +115,7 @@ export default function Home() {
       }
       window.location.href = "/dashboard";
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || "Login failed");
     } finally {
       setLoading(false);
     }
@@ -132,7 +145,7 @@ export default function Home() {
       }
       window.location.href = "/dashboard";
     } catch (err: any) {
-      setError(err.message);
+      setError(err.message || "2FA verification failed");
     } finally {
       setLoading(false);
     }
@@ -180,21 +193,22 @@ export default function Home() {
           <div className="blue-glass p-8 md:p-10 rounded-3xl shadow-2xl space-y-6">
             <div>
               <h2 className="text-2xl font-bold text-white">Connect Telegram</h2>
-              <p className="text-sm text-slate-400 mt-1">
-                {step === 1 && "Enter your phone number to receive a verification code"}
-                {step === 2 && "Enter the OTP code received on your Telegram app"}
+              <p className="text-xs text-slate-400 mt-1">
+                {step === 1 && "Enter your phone number & Telegram API credentials to log in"}
+                {step === 2 && "Enter the OTP code received in your Telegram app"}
                 {step === 3 && "Enter your Two-Step Verification (2FA) password"}
               </p>
             </div>
 
             {error && (
-              <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3.5 rounded-xl text-sm leading-relaxed">
-                {error}
+              <div className="bg-red-500/10 border border-red-500/20 text-red-400 p-3.5 rounded-xl text-xs flex items-start space-x-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>{error}</span>
               </div>
             )}
 
             {successMsg && (
-              <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 p-3.5 rounded-xl text-sm flex items-center space-x-2">
+              <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 p-3.5 rounded-xl text-xs flex items-center space-x-2">
                 <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
                 <span>{successMsg}</span>
               </div>
@@ -203,11 +217,13 @@ export default function Home() {
             {step === 1 && (
               <form onSubmit={handleSendCode} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1.5">Phone Number (with country code)</label>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">
+                    Phone Number (with country code)
+                  </label>
                   <input
                     type="tel"
                     placeholder="+1 234 567 8900"
-                    className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-4 py-3.5 focus:ring-2 focus:ring-blue-500 outline-none transition-all text-white placeholder-slate-500"
+                    className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:ring-2 focus:ring-blue-500 outline-none transition-all"
                     value={phoneNumber}
                     onChange={(e) => setPhoneNumber(e.target.value)}
                     required
@@ -215,47 +231,40 @@ export default function Home() {
                   />
                 </div>
 
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => setShowAdvancedApi(!showAdvancedApi)}
-                    className="text-xs text-blue-400 hover:text-blue-300 flex items-center space-x-1 transition-colors"
-                  >
+                <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-3">
+                  <div className="flex items-center space-x-1.5 text-xs font-semibold text-blue-400">
                     <Key className="w-3.5 h-3.5" />
-                    <span>{showAdvancedApi ? "Hide Custom API Credentials" : "Use Custom API ID & Hash (Optional)"}</span>
-                  </button>
-
-                  {showAdvancedApi && (
-                    <div className="mt-3 p-4 rounded-xl bg-slate-900/50 border border-white/5 space-y-3">
-                      <div>
-                        <label className="block text-xs font-medium text-slate-400 mb-1">Telegram API ID</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. 12345678"
-                          className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                          value={apiId}
-                          onChange={(e) => setApiId(e.target.value)}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-slate-400 mb-1">Telegram API Hash</label>
-                        <input
-                          type="text"
-                          placeholder="e.g. 0123456789abcdef0123456789abcdef"
-                          className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
-                          value={apiHash}
-                          onChange={(e) => setApiHash(e.target.value)}
-                        />
-                      </div>
-                      <p className="text-[11px] text-slate-500">
-                        Obtain your credentials from <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-blue-400 underline">my.telegram.org</a>. Leave blank to use server defaults.
-                      </p>
+                    <span>Telegram API Credentials</span>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-400 mb-1">API ID</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 12345678"
+                        className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                        value={apiId}
+                        onChange={(e) => setApiId(e.target.value)}
+                      />
                     </div>
-                  )}
+                    <div>
+                      <label className="block text-[11px] font-medium text-slate-400 mb-1">API Hash</label>
+                      <input
+                        type="text"
+                        placeholder="e.g. 0123456789abcdef..."
+                        className="w-full bg-slate-950 border border-white/10 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                        value={apiHash}
+                        onChange={(e) => setApiHash(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Get your free credentials from <a href="https://my.telegram.org" target="_blank" rel="noreferrer" className="text-blue-400 underline font-medium">my.telegram.org</a> (takes 30 seconds).
+                  </p>
                 </div>
 
-                <button type="submit" className="btn-primary w-full flex items-center justify-center space-x-2" disabled={loading}>
-                  <span>{loading ? "Sending Code..." : "Send Verification Code"}</span>
+                <button type="submit" className="btn-primary w-full flex items-center justify-center space-x-2 text-sm py-3" disabled={loading}>
+                  <span>{loading ? "Sending Code via Telegram..." : "Send Verification Code"}</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </form>
@@ -264,7 +273,7 @@ export default function Home() {
             {step === 2 && (
               <form onSubmit={handleLogin} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1.5">Enter Telegram OTP Code</label>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">Enter Telegram OTP Code</label>
                   <input
                     type="text"
                     placeholder="12345"
@@ -275,11 +284,11 @@ export default function Home() {
                     disabled={loading}
                     autoFocus
                   />
-                  <p className="text-xs text-slate-500 mt-2">Check your Telegram app messages for the code.</p>
+                  <p className="text-xs text-slate-500 mt-2">Check your Telegram app messages for the login code.</p>
                 </div>
 
-                <button type="submit" className="btn-primary w-full" disabled={loading}>
-                  {loading ? "Authenticating..." : "Verify & Connect Account"}
+                <button type="submit" className="btn-primary w-full text-sm py-3" disabled={loading}>
+                  {loading ? "Verifying..." : "Verify & Connect Account"}
                 </button>
 
                 <button
@@ -287,7 +296,7 @@ export default function Home() {
                   onClick={() => { setStep(1); setError(""); }}
                   className="w-full text-xs text-slate-400 hover:text-white transition-colors"
                 >
-                  Change phone number
+                  Change phone number or credentials
                 </button>
               </form>
             )}
@@ -295,7 +304,7 @@ export default function Home() {
             {step === 3 && (
               <form onSubmit={handle2FALogin} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-medium text-slate-300 mb-1.5">2-Step Verification Password</label>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1.5">2-Step Verification Password</label>
                   <input
                     type="password"
                     placeholder="Enter your 2FA password"
@@ -308,7 +317,7 @@ export default function Home() {
                   />
                 </div>
 
-                <button type="submit" className="btn-primary w-full" disabled={loading}>
+                <button type="submit" className="btn-primary w-full text-sm py-3" disabled={loading}>
                   {loading ? "Verifying Password..." : "Submit 2FA & Connect"}
                 </button>
 
@@ -321,12 +330,6 @@ export default function Home() {
                 </button>
               </form>
             )}
-
-            <div className="pt-2 text-center">
-              <p className="text-xs text-slate-500">
-                Encrypted Telegram MTProto connection. Sessions stored locally.
-              </p>
-            </div>
           </div>
         </FadeIn>
       </div>

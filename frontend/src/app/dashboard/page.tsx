@@ -29,7 +29,9 @@ import {
     UserCheck,
     MessageCircle,
     Sliders,
-    Link as LinkIcon
+    Link as LinkIcon,
+    Menu,
+    X
 } from "lucide-react";
 import Background from "@/components/Background";
 import FadeIn from "@/components/FadeIn";
@@ -90,7 +92,7 @@ export default function Dashboard() {
     const [activeTab, setActiveTab] = useState("Overview");
     const [user, setUser] = useState<TelegramUser | null>(null);
     const [accountData, setAccountData] = useState<any>(null);
-    const [isSidebarVisible, setIsSidebarVisible] = useState(true);
+    const [isSidebarVisible, setIsSidebarVisible] = useState(false);
     
     // Broadcast & group states
     const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
@@ -188,20 +190,20 @@ export default function Dashboard() {
     };
 
     return (
-        <div className="min-h-screen flex bg-black/60 overflow-hidden text-slate-100">
+        <div className="min-h-screen flex bg-black/60 overflow-hidden text-slate-100 relative">
             <Background />
 
-            {/* Sidebar Toggle Button (Mobile/Floating) */}
-            <button
-                onClick={() => setIsSidebarVisible(!isSidebarVisible)}
-                className="fixed bottom-6 right-6 z-50 p-4 bg-blue-600 rounded-full shadow-xl md:hidden text-white"
-            >
-                <Layers className="w-6 h-6" />
-            </button>
+            {/* Backdrop: clicking outside closes the drawer */}
+            {isSidebarVisible && (
+                <div
+                    onClick={() => setIsSidebarVisible(false)}
+                    className="fixed inset-0 bg-black/75 backdrop-blur-sm z-40 transition-opacity"
+                />
+            )}
 
-            {/* Sidebar */}
-            <aside className={`${isSidebarVisible ? "w-64" : "w-0 overflow-hidden"} blue-glass border-r border-white/5 flex flex-col z-20 transition-all duration-300 relative`}>
-                <div className="p-6">
+            {/* Sidebar Drawer: hidden by default, slides in when hamburger clicked */}
+            <aside className={`fixed inset-y-0 left-0 z-50 w-72 blue-glass border-r border-white/10 flex flex-col transition-transform duration-300 ease-in-out shadow-2xl ${isSidebarVisible ? "translate-x-0" : "-translate-x-full"}`}>
+                <div className="p-6 border-b border-white/5">
                     <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-3">
                             <div className="w-9 h-9 rounded-xl bg-blue-600/30 border border-blue-500/30 flex items-center justify-center text-blue-400">
@@ -212,28 +214,46 @@ export default function Dashboard() {
                                 <span className="block text-[10px] uppercase tracking-wider text-blue-400 font-semibold">Broadcaster</span>
                             </div>
                         </div>
+
+                        {/* Cancel / Close icon on the menu */}
+                        <button
+                            onClick={() => setIsSidebarVisible(false)}
+                            className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white transition-all"
+                            title="Close Menu"
+                        >
+                            <X className="w-5 h-5" />
+                        </button>
                     </div>
                 </div>
 
-                <nav className="flex-1 px-4 space-y-1.5 py-2">
+                <nav className="flex-1 px-4 space-y-1.5 py-4 overflow-y-auto">
                     <NavItem
                         icon={<Layers className="w-4 h-4" />}
                         label="Overview"
                         active={activeTab === "Overview"}
-                        onClick={() => setActiveTab("Overview")}
+                        onClick={() => {
+                            setActiveTab("Overview");
+                            setIsSidebarVisible(false);
+                        }}
                     />
                     <NavItem
                         icon={<Users className="w-4 h-4" />}
                         label="Groups Directory"
                         badge={accountData?.total_groups ? `${accountData.total_groups}` : undefined}
                         active={activeTab === "Groups"}
-                        onClick={() => setActiveTab("Groups")}
+                        onClick={() => {
+                            setActiveTab("Groups");
+                            setIsSidebarVisible(false);
+                        }}
                     />
                     <NavItem
                         icon={<FileText className="w-4 h-4" />}
                         label="Templates"
                         active={activeTab === "Templates"}
-                        onClick={() => setActiveTab("Templates")}
+                        onClick={() => {
+                            setActiveTab("Templates");
+                            setIsSidebarVisible(false);
+                        }}
                     />
                     <NavItem
                         icon={<Send className="w-4 h-4" />}
@@ -241,23 +261,32 @@ export default function Dashboard() {
                         badge={activeCampaign ? "LIVE" : undefined}
                         badgeColor={activeCampaign ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : undefined}
                         active={activeTab === "Broadcasts"}
-                        onClick={() => setActiveTab("Broadcasts")}
+                        onClick={() => {
+                            setActiveTab("Broadcasts");
+                            setIsSidebarVisible(false);
+                        }}
                     />
                     <NavItem
                         icon={<BarChart3 className="w-4 h-4" />}
                         label="Analytics"
                         active={activeTab === "Analytics"}
-                        onClick={() => setActiveTab("Analytics")}
+                        onClick={() => {
+                            setActiveTab("Analytics");
+                            setIsSidebarVisible(false);
+                        }}
                     />
                     <NavItem
                         icon={<SettingIcon className="w-4 h-4" />}
                         label="Settings"
                         active={activeTab === "Settings"}
-                        onClick={() => setActiveTab("Settings")}
+                        onClick={() => {
+                            setActiveTab("Settings");
+                            setIsSidebarVisible(false);
+                        }}
                     />
                 </nav>
 
-                <div className="p-4 mt-auto">
+                <div className="p-4 mt-auto border-t border-white/5">
                     <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-3">
                         <div className="flex items-center space-x-3">
                             <div className="w-9 h-9 rounded-xl bg-blue-500/20 flex items-center justify-center text-blue-400 font-bold border border-blue-500/20">
@@ -286,28 +315,29 @@ export default function Dashboard() {
             </aside>
 
             {/* Main Content */}
-            <main className="flex-1 overflow-y-auto p-6 md:p-10 z-10 text-white relative">
-                {!isSidebarVisible && (
-                    <button
-                        onClick={() => setIsSidebarVisible(true)}
-                        className="absolute top-8 left-8 p-2 blue-glass rounded-lg hover:bg-white/5 transition-all z-30"
-                        title="Show Sidebar"
-                    >
-                        <Layers className="w-5 h-5 text-blue-400" />
-                    </button>
-                )}
+            <main className="flex-1 overflow-y-auto p-6 md:p-10 z-10 text-white relative w-full">
+                <header className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8">
+                    <div className="flex items-center space-x-3.5">
+                        {/* Hamburger Button to Open Menu */}
+                        <button
+                            onClick={() => setIsSidebarVisible(true)}
+                            className="p-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white transition-all flex items-center justify-center flex-shrink-0"
+                            title="Open Menu"
+                        >
+                            <Menu className="w-5 h-5 text-blue-400" />
+                        </button>
 
-                <header className={`flex flex-col md:flex-row md:items-center justify-between gap-4 mb-8 ${!isSidebarVisible ? 'pl-12' : ''}`}>
-                    <div>
-                        <h1 className="text-3xl font-extrabold tracking-tight">{activeTab}</h1>
-                        <p className="text-sm text-slate-400 mt-1">
-                            {activeTab === "Overview" && `Welcome back, ${user?.first_name || "Scout"}. Monitor and scale your broadcasts.`}
-                            {activeTab === "Groups" && "Manage detected Telegram groups, auto-sync new ones, and target 300+ groups."}
-                            {activeTab === "Templates" && "Create dynamic spintax messages and test variations with anti-spam tags."}
-                            {activeTab === "Broadcasts" && "Control running campaigns with 1-minute smart timing and view live delivery logs."}
-                            {activeTab === "Analytics" && "Performance metrics, group delivery rates, and reach insights."}
-                            {activeTab === "Settings" && "Telegram MTProto credentials, delay preferences, and account management."}
-                        </p>
+                        <div>
+                            <h1 className="text-3xl font-extrabold tracking-tight">{activeTab}</h1>
+                            <p className="text-sm text-slate-400 mt-1">
+                                {activeTab === "Overview" && `Welcome back, ${user?.first_name || "Scout"}. Monitor and scale your broadcasts.`}
+                                {activeTab === "Groups" && "Manage detected Telegram groups, auto-sync new ones, and target 300+ groups."}
+                                {activeTab === "Templates" && "Create dynamic spintax messages and test variations with anti-spam tags."}
+                                {activeTab === "Broadcasts" && "Control running campaigns with 1-minute smart timing and view live delivery logs."}
+                                {activeTab === "Analytics" && "Performance metrics, group delivery rates, and reach insights."}
+                                {activeTab === "Settings" && "Telegram MTProto credentials, delay preferences, and account management."}
+                            </p>
+                        </div>
                     </div>
 
                     <div className="flex items-center space-x-3">

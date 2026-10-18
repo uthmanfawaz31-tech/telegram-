@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import urllib.request
 from typing import Any, Dict, List, Optional, Set
@@ -256,9 +257,14 @@ async def create_campaign(
 
     delay_sec = payload.delay_seconds if (payload.delay_seconds is not None and payload.delay_seconds >= 3) else 25
 
+    # Sanitize message text to strip any tags accidentally glued to link slugs
+    clean_message = payload.message_text.strip()
+    while re.search(r'(https?://[^\s{}]+)\{[a-zA-Z0-9_| ]+\}', clean_message):
+        clean_message = re.sub(r'(https?://[^\s{}]+)\{[a-zA-Z0-9_| ]+\}', r'\1', clean_message)
+
     db_campaign = models.Campaign(
         name=payload.name.strip(),
-        message_text=payload.message_text.strip(),
+        message_text=clean_message,
         scheduled_at=payload.scheduled_at,
         status="pending",
         total_targets=len(targets),
@@ -281,7 +287,7 @@ async def create_campaign(
         db_campaign.id,
         account.session_string,
         targets,
-        payload.message_text,
+        clean_message,
         delay_sec,
         bool(payload.use_jitter),
         account.api_id,
@@ -324,6 +330,33 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)) -> Any:
         db.commit()
     return campaign
 
+@router.patch("/{campaign_id}", response_model=schemas.CampaignResponse)
+def update_campaign(
+    campaign_id: int,
+    payload: schemas.CampaignUpdate,
+    db: Session = Depends(get_db)
+) -> Any:
+    """
+    Update campaign details (e.g. edit message text, fix links, or update delay).
+    """
+    campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if payload.name is not None:
+        campaign.name = payload.name.strip()
+    if payload.message_text is not None:
+        clean_msg = payload.message_text.strip()
+        while re.search(r'(https?://[^\s{}]+)\{[a-zA-Z0-9_| ]+\}', clean_msg):
+            clean_msg = re.sub(r'(https?://[^\s{}]+)\{[a-zA-Z0-9_| ]+\}', r'\1', clean_msg)
+        campaign.message_text = clean_msg
+    if payload.delay_seconds is not None:
+        campaign.delay_seconds = max(3, payload.delay_seconds)
+
+    db.commit()
+    db.refresh(campaign)
+    return campaign
+
 @router.post("/{campaign_id}/pause", response_model=schemas.CampaignResponse)
 def pause_campaign(campaign_id: int, db: Session = Depends(get_db)) -> Any:
     campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
@@ -342,6 +375,7 @@ async def resume_campaign(
 ) -> Any:
     """
     Resume an interrupted or paused campaign from the exact target it stopped at!
+    Automatically cleans any accidental tags glued onto links before launching.
     """
     campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
     if not campaign:
@@ -350,6 +384,13 @@ async def resume_campaign(
     account = db.query(models.TelegramAccount).filter(models.TelegramAccount.is_connected == True).first()
     if not account or not account.session_string:
         raise HTTPException(status_code=400, detail="Telegram account not connected")
+
+    # Sanitize campaign message so no link is ever broken
+    if campaign.message_text:
+        clean_msg = campaign.message_text
+        while re.search(r'(https?://[^\s{}]+)\{[a-zA-Z0-9_| ]+\}', clean_msg):
+            clean_msg = re.sub(r'(https?://[^\s{}]+)\{[a-zA-Z0-9_| ]+\}', r'\1', clean_msg)
+        campaign.message_text = clean_msg
 
     campaign.status = "running"
     db.commit()

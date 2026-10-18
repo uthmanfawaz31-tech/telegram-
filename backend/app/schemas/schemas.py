@@ -109,9 +109,14 @@ class CampaignCreate(BaseModel):
     name: str
     message_text: str
     chat_ids: Optional[List[str]] = None # string peer_ids or group IDs
-    delay_seconds: Optional[int] = 60 # 1 minute default delay
+    delay_seconds: Optional[int] = 25 # default delay
     use_jitter: Optional[bool] = True
     scheduled_at: Optional[datetime] = None
+
+class CampaignUpdate(BaseModel):
+    name: Optional[str] = None
+    message_text: Optional[str] = None
+    delay_seconds: Optional[int] = None
 
 class CampaignResponse(BaseModel):
     id: int

@@ -258,13 +258,27 @@ class TelegramService:
     @classmethod
     def render_template(cls, text: str, group_name: str = "Group") -> str:
         """
-        Replaces variables and then evaluates spintax:
-        - {group_name}: target group's title
-        - {date}: Current formatted date (e.g. Oct 13, 2026)
-        - {time}: Current formatted time (e.g. 11:30 AM)
-        - {random_emoji}: A random friendly emoji
-        - {greeting}: Time-of-day contextual greeting
+        Replaces variables and evaluates spintax safely:
+        - NEVER allows dynamic placeholders ({group_name}, etc.) to corrupt URLs!
+        - Strips any accidental tags glued directly onto link slugs (e.g. wa.link/xyz{group_name}).
+        - Masks all URLs during spintax & variable replacement to preserve links 100% intact.
         """
+        if not text:
+            return ""
+
+        # 1. Clean accidental tags glued directly onto URLs (e.g. https://wa.link/xyz{group_name})
+        cleaned = text
+        while re.search(r'(https?://[^\s{}]+)\{[a-zA-Z0-9_| ]+\}', cleaned):
+            cleaned = re.sub(r'(https?://[^\s{}]+)\{[a-zA-Z0-9_| ]+\}', r'\1', cleaned)
+
+        # 2. Extract and mask all URLs with safe placeholders so spintax / variable engines never touch links
+        url_matches = re.findall(r'https?://[^\s]+', cleaned)
+        url_map = {}
+        for idx, url in enumerate(url_matches):
+            placeholder = f"__TELEPRO_LINK_{idx}__"
+            url_map[placeholder] = url
+            cleaned = cleaned.replace(url, placeholder, 1)
+
         now = datetime.datetime.now()
         hour = now.hour
         if hour < 12:
@@ -274,8 +288,8 @@ class TelegramService:
         else:
             greeting = "Good evening"
 
-        # Replace dynamic variables
-        rendered = text.replace("{group_name}", group_name)
+        # 3. Replace dynamic variables in the message body
+        rendered = cleaned.replace("{group_name}", group_name)
         rendered = rendered.replace("{date}", now.strftime("%B %d, %Y"))
         rendered = rendered.replace("{time}", now.strftime("%I:%M %p"))
         rendered = rendered.replace("{greeting}", greeting)
@@ -284,5 +298,11 @@ class TelegramService:
         while "{random_emoji}" in rendered:
             rendered = rendered.replace("{random_emoji}", random.choice(EMOJIS), 1)
 
-        # Parse spintax variations
-        return cls.parse_spintax(rendered)
+        # 4. Parse spintax variations
+        rendered = cls.parse_spintax(rendered)
+
+        # 5. Restore original, untouched URLs
+        for placeholder, original_url in url_map.items():
+            rendered = rendered.replace(placeholder, original_url)
+
+        return rendered

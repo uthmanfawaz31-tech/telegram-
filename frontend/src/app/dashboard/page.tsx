@@ -101,6 +101,8 @@ export default function Dashboard() {
     const [showJoinModal, setShowJoinModal] = useState(false);
     const [editingTemplate, setEditingTemplate] = useState<BroadcastTemplate | null>(null);
     const [inspectCampaignId, setInspectCampaignId] = useState<number | null>(null);
+    const [showEditCampaignModal, setShowEditCampaignModal] = useState(false);
+    const [editingCampaignMessage, setEditingCampaignMessage] = useState("");
     
     // Global sync notification
     const [syncing, setSyncing] = useState(false);
@@ -522,6 +524,23 @@ export default function Dashboard() {
                                     </button>
                                 )}
 
+                                {/* Edit Message Button */}
+                                <button
+                                    onClick={() => {
+                                        let cleanMsg = activeCampaign.message_text;
+                                        while (/(https?:\/\/[^\s{}]+)\{[a-zA-Z0-9_| ]+\}/.test(cleanMsg)) {
+                                            cleanMsg = cleanMsg.replace(/(https?:\/\/[^\s{}]+)\{[a-zA-Z0-9_| ]+\}/g, "$1");
+                                        }
+                                        setEditingCampaignMessage(cleanMsg);
+                                        setShowEditCampaignModal(true);
+                                    }}
+                                    className="px-3.5 py-1.5 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/20 text-blue-400 text-xs font-semibold flex items-center space-x-1.5 transition-all"
+                                    title="View or edit message for this broadcast"
+                                >
+                                    <FileText className="w-3.5 h-3.5" />
+                                    <span>Edit Message</span>
+                                </button>
+
                                 {/* Delete / Stop Project Button */}
                                 <button
                                     onClick={async () => {
@@ -650,6 +669,18 @@ export default function Dashboard() {
                     <CampaignLogsModal
                         campaignId={inspectCampaignId}
                         onClose={() => setInspectCampaignId(null)}
+                    />
+                )}
+
+                {showEditCampaignModal && activeCampaign && (
+                    <EditCampaignMessageModal
+                        campaign={activeCampaign}
+                        initialMessage={editingCampaignMessage}
+                        onClose={() => setShowEditCampaignModal(false)}
+                        onSaved={(updated) => {
+                            setActiveCampaign(updated);
+                            setShowEditCampaignModal(false);
+                        }}
                     />
                 )}
             </main>
@@ -1607,21 +1638,66 @@ function NewCampaignModal({
         fetchTemplates();
     }, []);
 
-    const insertTag = (tag: string) => {
-        setMessage(prev => prev + tag);
+    const cleanGluedTags = (txt: string) => {
+        let res = txt;
+        while (/(https?:\/\/[^\s{}]+)\{[a-zA-Z0-9_| ]+\}/.test(res)) {
+            res = res.replace(/(https?:\/\/[^\s{}]+)\{[a-zA-Z0-9_| ]+\}/g, "$1");
+        }
+        return res;
     };
+
+    const insertTag = (tag: string) => {
+        setMessage(prev => {
+            if (!prev) return tag;
+            if (/https?:\/\/[^\s]+$/.test(prev)) {
+                return prev + "\n\n" + tag;
+            }
+            if (!/\s$/.test(prev)) {
+                return prev + " " + tag;
+            }
+            return prev + tag;
+        });
+    };
+
+    const renderPreview = (txt: string) => {
+        if (!txt) return "";
+        let res = cleanGluedTags(txt);
+        const urls = res.match(/https?:\/\/[^\s]+/g) || [];
+        const map: { [k: string]: string } = {};
+        urls.forEach((u, i) => {
+            const token = `__TOKEN_URL_${i}__`;
+            map[token] = u;
+            res = res.replace(u, token);
+        });
+        res = res.replace(/\{group_name\}/g, "VIP Subscribers Chat");
+        res = res.replace(/\{greeting\}/g, "Hello");
+        res = res.replace(/\{random_emoji\}/g, "✨");
+        res = res.replace(/\{date\}/g, new Date().toLocaleDateString());
+        res = res.replace(/\{time\}/g, new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+        res = res.replace(/\{([^{}]+)\}/g, (m, choices) => {
+            const parts = choices.split("|");
+            return parts[0].trim();
+        });
+        Object.entries(map).forEach(([k, v]) => {
+            res = res.replace(k, v);
+        });
+        return res;
+    };
+
+    const detectedLinks = message.match(/https?:\/\/[^\s]+/g) || [];
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setLoading(true);
         setError("");
         try {
+            const cleanMsg = cleanGluedTags(message.trim());
             const res = await fetch(`${API_BASE}/campaigns`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     name: name.trim(),
-                    message_text: message.trim(),
+                    message_text: cleanMsg,
                     delay_seconds: Number(delaySeconds),
                     use_jitter: useJitter,
                     chat_ids: initialSelectedIds.length > 0 ? initialSelectedIds : null
@@ -1684,7 +1760,7 @@ function NewCampaignModal({
                             <select
                                 className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:outline-none focus:border-blue-500 appearance-none"
                                 onChange={(e) => {
-                                    if (e.target.value) setMessage(e.target.value);
+                                    if (e.target.value) setMessage(cleanGluedTags(e.target.value));
                                 }}
                                 defaultValue=""
                             >
@@ -1726,6 +1802,37 @@ function NewCampaignModal({
                                 </button>
                             ))}
                         </div>
+
+                        {detectedLinks.length > 0 && (
+                            <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 space-y-1 mt-2.5">
+                                <span className="text-[11px] text-emerald-400 font-semibold flex items-center space-x-1.5">
+                                    <Shield className="w-3.5 h-3.5" />
+                                    <span>Detected Links (Protected & Verified Intact):</span>
+                                </span>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {detectedLinks.map((link, idx) => (
+                                        <span key={idx} className="text-[11px] px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 font-mono">
+                                            {link}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        {message.trim() && (
+                            <div className="p-3.5 rounded-xl bg-slate-900/90 border border-white/10 space-y-2 mt-3">
+                                <div className="flex items-center justify-between text-[11px] text-slate-400">
+                                    <span className="flex items-center space-x-1 font-semibold text-slate-300">
+                                        <Eye className="w-3.5 h-3.5 text-blue-400" />
+                                        <span>Live Telegram Post Preview</span>
+                                    </span>
+                                    <span className="text-[10px] text-emerald-400 font-medium">Link Untouched</span>
+                                </div>
+                                <div className="p-3 rounded-lg bg-black/40 border border-white/5 text-xs text-slate-200 whitespace-pre-wrap max-h-36 overflow-y-auto font-sans">
+                                    {renderPreview(message)}
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     {/* Broadcast timing controls & Speed Presets */}
@@ -1853,11 +1960,20 @@ function TemplateEditorModal({
     const [previewSamples, setPreviewSamples] = useState<string[]>([]);
     const [previewLoading, setPreviewLoading] = useState(false);
 
+    const cleanGluedTags = (txt: string) => {
+        let res = txt;
+        while (/(https?:\/\/[^\s{}]+)\{[a-zA-Z0-9_| ]+\}/.test(res)) {
+            res = res.replace(/(https?:\/\/[^\s{}]+)\{[a-zA-Z0-9_| ]+\}/g, "$1");
+        }
+        return res;
+    };
+
     const handleSave = async (e: React.FormEvent) => {
         e.preventDefault();
         setLoading(true);
         setError("");
         try {
+            const cleanMsg = cleanGluedTags(messageText.trim());
             const url = template ? `${API_BASE}/templates/${template.id}` : `${API_BASE}/templates/`;
             const method = template ? "PUT" : "POST";
             const res = await fetch(url, {
@@ -1865,7 +1981,7 @@ function TemplateEditorModal({
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     name: name.trim(),
-                    message_text: messageText.trim()
+                    message_text: cleanMsg
                 })
             });
             if (!res.ok) throw new Error("Failed to save template");
@@ -1900,7 +2016,7 @@ function TemplateEditorModal({
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    template_text: messageText,
+                    template_text: cleanGluedTags(messageText),
                     count: 3
                 })
             });
@@ -1914,8 +2030,19 @@ function TemplateEditorModal({
     };
 
     const insertTag = (tag: string) => {
-        setMessageText(prev => prev + tag);
+        setMessageText(prev => {
+            if (!prev) return tag;
+            if (/https?:\/\/[^\s]+$/.test(prev)) {
+                return prev + "\n\n" + tag;
+            }
+            if (!/\s$/.test(prev)) {
+                return prev + " " + tag;
+            }
+            return prev + tag;
+        });
     };
+
+    const detectedLinks = messageText.match(/https?:\/\/[^\s]+/g) || [];
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
@@ -1983,6 +2110,22 @@ function TemplateEditorModal({
                                 </button>
                             ))}
                         </div>
+
+                        {detectedLinks.length > 0 && (
+                            <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 space-y-1 mt-2.5">
+                                <span className="text-[11px] text-emerald-400 font-semibold flex items-center space-x-1.5">
+                                    <Shield className="w-3.5 h-3.5" />
+                                    <span>Detected Links (Protected & Verified Intact):</span>
+                                </span>
+                                <div className="flex flex-wrap gap-1.5">
+                                    {detectedLinks.map((link, idx) => (
+                                        <span key={idx} className="text-[11px] px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 font-mono">
+                                            {link}
+                                        </span>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     {/* Spintax Live Tester Section */}
@@ -2180,6 +2323,257 @@ function CampaignLogsModal({ campaignId, onClose }: { campaignId: number; onClos
                         ))
                     )}
                 </div>
+            </motion.div>
+        </div>
+    );
+}
+
+/* =========================================================================
+   EDIT CAMPAIGN MESSAGE MODAL
+   ========================================================================= */
+function EditCampaignMessageModal({
+    campaign,
+    initialMessage,
+    onClose,
+    onSaved
+}: {
+    campaign: Campaign;
+    initialMessage: string;
+    onClose: () => void;
+    onSaved: (updated: Campaign) => void;
+}) {
+    const [name, setName] = useState(campaign.name);
+    const [message, setMessage] = useState(initialMessage || campaign.message_text);
+    const [delaySeconds, setDelaySeconds] = useState(campaign.delay_seconds || 25);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState("");
+    const [success, setSuccess] = useState("");
+
+    const cleanGluedTags = (txt: string) => {
+        let res = txt;
+        while (/(https?:\/\/[^\s{}]+)\{[a-zA-Z0-9_| ]+\}/.test(res)) {
+            res = res.replace(/(https?:\/\/[^\s{}]+)\{[a-zA-Z0-9_| ]+\}/g, "$1");
+        }
+        return res;
+    };
+
+    const insertTag = (tag: string) => {
+        setMessage(prev => {
+            if (!prev) return tag;
+            if (/https?:\/\/[^\s]+$/.test(prev)) {
+                return prev + "\n\n" + tag;
+            }
+            if (!/\s$/.test(prev)) {
+                return prev + " " + tag;
+            }
+            return prev + tag;
+        });
+    };
+
+    const renderPreview = (txt: string) => {
+        if (!txt) return "";
+        let res = cleanGluedTags(txt);
+        const urls = res.match(/https?:\/\/[^\s]+/g) || [];
+        const map: { [k: string]: string } = {};
+        urls.forEach((u, i) => {
+            const token = `__TOKEN_URL_${i}__`;
+            map[token] = u;
+            res = res.replace(u, token);
+        });
+        res = res.replace(/\{group_name\}/g, "VIP Subscribers Chat");
+        res = res.replace(/\{greeting\}/g, "Hello");
+        res = res.replace(/\{random_emoji\}/g, "✨");
+        res = res.replace(/\{date\}/g, new Date().toLocaleDateString());
+        res = res.replace(/\{time\}/g, new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+        res = res.replace(/\{([^{}]+)\}/g, (m, choices) => {
+            const parts = choices.split("|");
+            return parts[0].trim();
+        });
+        Object.entries(map).forEach(([k, v]) => {
+            res = res.replace(k, v);
+        });
+        return res;
+    };
+
+    const detectedLinks = message.match(/https?:\/\/[^\s]+/g) || [];
+    const hasCorruptTagGlued = /(https?:\/\/[^\s{}]+)\{[a-zA-Z0-9_| ]+\}/.test(message);
+
+    const handleSave = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setLoading(true);
+        setError("");
+        setSuccess("");
+        try {
+            const cleanMsg = cleanGluedTags(message.trim());
+            const res = await fetch(`${API_BASE}/campaigns/${campaign.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: name.trim(),
+                    message_text: cleanMsg,
+                    delay_seconds: Number(delaySeconds)
+                })
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || "Failed to update broadcast message");
+            setSuccess("Broadcast message updated successfully! Safe links locked in.");
+            setTimeout(() => {
+                onSaved(data);
+            }, 800);
+        } catch (err: any) {
+            setError(err.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm overflow-y-auto">
+            <motion.div
+                initial={{ opacity: 0, scale: 0.95 }}
+                animate={{ opacity: 1, scale: 1 }}
+                className="blue-glass w-full max-w-2xl p-6 md:p-8 rounded-3xl border border-white/10 space-y-6 my-8"
+            >
+                <div className="flex justify-between items-center">
+                    <div>
+                        <h3 className="text-xl font-bold text-white">Edit Broadcast Message & Settings</h3>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                            Update message for <strong className="text-blue-400">{campaign.name}</strong> (Target {campaign.processed_count} of {campaign.total_targets})
+                        </p>
+                    </div>
+                    <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors">
+                        <Plus className="w-6 h-6 rotate-45" />
+                    </button>
+                </div>
+
+                {error && (
+                    <div className="p-3 bg-red-500/10 border border-red-500/20 text-red-400 rounded-xl text-xs">
+                        {error}
+                    </div>
+                )}
+                {success && (
+                    <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl text-xs flex items-center space-x-2">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                        <span>{success}</span>
+                    </div>
+                )}
+
+                {hasCorruptTagGlued && (
+                    <div className="p-3 bg-amber-500/10 border border-amber-500/20 text-amber-300 rounded-xl text-xs flex items-center justify-between">
+                        <span>⚠️ Dynamic tag is touching a URL slug! Click to safely clean it:</span>
+                        <button
+                            type="button"
+                            onClick={() => setMessage(cleanGluedTags(message))}
+                            className="px-2.5 py-1 rounded bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 text-xs font-semibold"
+                        >
+                            Fix Link Now
+                        </button>
+                    </div>
+                )}
+
+                <form onSubmit={handleSave} className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-xs font-semibold text-slate-300 mb-1.5">Broadcast Name</label>
+                            <input
+                                type="text"
+                                className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                                value={name}
+                                onChange={(e) => setName(e.target.value)}
+                                required
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-xs font-semibold text-slate-300 mb-1.5">Interval Delay (seconds)</label>
+                            <input
+                                type="number"
+                                min={3}
+                                max={600}
+                                className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-blue-500"
+                                value={delaySeconds}
+                                onChange={(e) => setDelaySeconds(Math.max(3, Number(e.target.value)))}
+                                required
+                            />
+                        </div>
+                    </div>
+
+                    <div>
+                        <div className="flex justify-between items-center mb-1.5">
+                            <label className="text-xs font-semibold text-slate-300">Message Content</label>
+                            <span className="text-[10px] text-emerald-400 font-medium">Links are protected against tampering</span>
+                        </div>
+                        <textarea
+                            rows={8}
+                            className="w-full bg-slate-900/80 border border-white/10 rounded-xl p-3.5 text-sm text-white focus:outline-none focus:border-blue-500 font-sans resize-none"
+                            value={message}
+                            onChange={(e) => setMessage(e.target.value)}
+                            required
+                        />
+
+                        {/* Tag insertion helpers */}
+                        <div className="flex flex-wrap items-center gap-1.5 mt-2">
+                            <span className="text-[10px] text-slate-500 mr-1">Insert Helper:</span>
+                            {["{group_name}", "{random_emoji}", "{greeting}", "{date}", "{time}"].map((tag) => (
+                                <button
+                                    key={tag}
+                                    type="button"
+                                    onClick={() => insertTag(tag)}
+                                    className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/10 border border-white/10 text-blue-400 text-[10px] font-mono transition-colors"
+                                >
+                                    {tag}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+
+                    {detectedLinks.length > 0 && (
+                        <div className="p-3 rounded-xl bg-white/5 border border-white/5 space-y-1.5">
+                            <span className="text-[11px] text-emerald-400 font-semibold flex items-center space-x-1.5">
+                                <Shield className="w-3.5 h-3.5" />
+                                <span>Detected Links (Protected & Locked):</span>
+                            </span>
+                            <div className="flex flex-wrap gap-1.5">
+                                {detectedLinks.map((link, idx) => (
+                                    <span key={idx} className="text-[11px] px-2.5 py-1 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 font-mono">
+                                        {link}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {message.trim() && (
+                        <div className="p-3.5 rounded-xl bg-slate-900/90 border border-white/10 space-y-2">
+                            <div className="flex items-center justify-between text-[11px] text-slate-400">
+                                <span className="flex items-center space-x-1 font-semibold text-slate-300">
+                                    <Eye className="w-3.5 h-3.5 text-blue-400" />
+                                    <span>Live Telegram Preview</span>
+                                </span>
+                                <span className="text-[10px] text-emerald-400 font-medium">Link Intact</span>
+                            </div>
+                            <div className="p-3 rounded-lg bg-black/40 border border-white/5 text-xs text-slate-200 whitespace-pre-wrap max-h-40 overflow-y-auto font-sans">
+                                {renderPreview(message)}
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="flex justify-end space-x-3 pt-2">
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className="px-5 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-400 text-xs font-semibold"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            type="submit"
+                            disabled={loading}
+                            className="btn-primary text-xs py-2.5 px-6"
+                        >
+                            {loading ? "Saving Changes..." : "Save Updated Message"}
+                        </button>
+                    </div>
+                </form>
             </motion.div>
         </div>
     );

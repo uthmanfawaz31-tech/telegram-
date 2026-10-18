@@ -2,8 +2,11 @@ import asyncio
 from datetime import datetime
 import json
 import logging
+import os
 import random
-from typing import Any, List, Optional, Set
+import time
+import urllib.request
+from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Query
 from sqlalchemy.orm import Session
@@ -17,27 +20,56 @@ from app.services.telegram_service import TelegramService
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Active background worker tracking
+# Active background worker and heartbeat tracking
 active_workers: Set[int] = set()
+worker_heartbeat: Dict[int, float] = {}
+
+async def send_keep_alive_ping():
+    """
+    Pings the server's public URL (Render or local) every 3.5 minutes
+    so Render Free tier NEVER spins down or terminates during an outreach campaign!
+    """
+    public_url = os.getenv("RENDER_EXTERNAL_URL", "https://telepro-back.onrender.com").rstrip("/")
+    ping_url = f"{public_url}/api/v1/ping"
+    try:
+        req = urllib.request.Request(ping_url, headers={"User-Agent": "TelePro-KeepAlive/1.0"})
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=10))
+        logger.info(f"Keep-alive self-ping sent to {ping_url}")
+    except Exception as e:
+        logger.debug(f"Keep-alive ping notice: {e}")
+
+@router.get("/ping")
+def ping_endpoint() -> dict:
+    """
+    Lightweight keep-alive endpoint used by workers and frontends to prevent cloud container sleep.
+    """
+    return {
+        "status": "pong",
+        "active_workers": list(active_workers),
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
 async def run_broadcast_worker(
     campaign_id: int,
     session_string: str,
     targets: List[dict], # list of {"id": str, "name": str}
     message_text: str,
-    delay_seconds: int = 60,
+    delay_seconds: int = 25,
     use_jitter: bool = True,
     api_id: Optional[str] = None,
     api_hash: Optional[str] = None
 ):
     """
-    Stateful broadcast worker capable of handling 300+ groups safely:
-    - Timing: ~60 seconds (1 minute) interval between groups.
+    Resilient stateful broadcast worker capable of handling 300+ groups safely:
+    - Timing: Flexible configurable interval (Turbo 10s, Balanced 25s, Safe 60s).
+    - Anti-Sleep: Self-pings public URL so Render/cloud servers NEVER sleep while broadcasting!
     - Anti-Spam: Dynamic spintax, human typing simulation, and Telegram FloodWait auto-recovery.
-    - Stateful: Supports pause, resume, and cancellation from frontend in real-time.
-    - Resumable: If interrupted by network disconnect, can pick up exactly from current_index!
+    - Stateful & Resilient: Auto-reconnects on network drops, non-blocking pause/resume, and exact position recovery.
     """
     active_workers.add(campaign_id)
+    worker_heartbeat[campaign_id] = time.time()
+    last_keepalive_time = time.time()
     db = SessionLocal()
     service = TelegramService(session_string=session_string, api_id=api_id, api_hash=api_hash)
     
@@ -54,79 +86,113 @@ async def run_broadcast_worker(
 
         await service.connect()
 
+        # Send initial keep-alive ping right at start
+        await send_keep_alive_ping()
+
         for idx in range(campaign.current_index, len(targets)):
             target = targets[idx]
             chat_id = target["id"]
             chat_title = target.get("name") or f"Group {chat_id}"
+            worker_heartbeat[campaign_id] = time.time()
 
             # Check campaign status (pause or cancel)
             while True:
-                db.refresh(campaign)
-                if campaign.status == "cancelled":
-                    logger.info(f"Broadcast {campaign_id} cancelled.")
-                    return
-                elif campaign.status in ("paused", "interrupted"):
-                    # Wait 5 seconds and check again
-                    await asyncio.sleep(5)
-                    continue
+                try:
+                    db.refresh(campaign)
+                    if campaign.status == "cancelled":
+                        logger.info(f"Broadcast {campaign_id} cancelled.")
+                        return
+                    elif campaign.status in ("paused", "interrupted"):
+                        await asyncio.sleep(4)
+                        continue
+                except Exception as dbe:
+                    logger.warning(f"DB status check notice: {dbe}")
                 break
 
             # Update current progress in database
             campaign.current_index = idx
             campaign.current_target_name = chat_title
-            db.commit()
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+
+            # Dynamic typing duration based on user pacing
+            typing_dur = 1.0 if delay_seconds <= 15 else 2.5
 
             # Send message with anti-spam safeguards (typing simulation, spintax, variables)
             success, sent_content, err_msg = await service.send_humanized_message(
                 peer_id=chat_id,
                 template_text=message_text,
-                group_name=chat_title
+                group_name=chat_title,
+                simulate_typing=True,
+                typing_duration=typing_dur
             )
 
             # Record log
-            log = models.BroadcastLog(
-                campaign_id=campaign_id,
-                group_id=str(chat_id),
-                group_name=chat_title,
-                status="success" if success else "failed",
-                error_message=err_msg,
-                sent_message_snippet=sent_content[:200] if sent_content else None,
-                sent_at=datetime.utcnow()
-            )
-            db.add(log)
+            try:
+                log = models.BroadcastLog(
+                    campaign_id=campaign_id,
+                    group_id=str(chat_id),
+                    group_name=chat_title,
+                    status="success" if success else "failed",
+                    error_message=err_msg,
+                    sent_message_snippet=sent_content[:200] if sent_content else None,
+                    sent_at=datetime.utcnow()
+                )
+                db.add(log)
 
-            campaign.processed_count += 1
-            if success:
-                campaign.success_count += 1
-            else:
-                campaign.failed_count += 1
-            db.commit()
+                campaign.processed_count += 1
+                if success:
+                    campaign.success_count += 1
+                else:
+                    campaign.failed_count += 1
+                db.commit()
+            except Exception as log_err:
+                logger.warning(f"Error saving log: {log_err}")
+                db.rollback()
 
-            # Anti-Spam timing: wait approximately 1 minute before the next group
+            # Check if keepalive ping is due (every 3.5 minutes) to keep Render awake
+            now = time.time()
+            if now - last_keepalive_time > 210:
+                await send_keep_alive_ping()
+                last_keepalive_time = now
+
+            # Pacing timing: wait before the next group
             if idx < len(targets) - 1:
-                base_delay = delay_seconds if delay_seconds > 0 else 60
+                base_delay = delay_seconds if (delay_seconds is not None and delay_seconds >= 3) else 25
                 if use_jitter:
-                    min_delay = max(20, base_delay - 5)
-                    max_delay = base_delay + 8
+                    jitter_range = min(4, max(1, int(base_delay * 0.15)))
+                    min_delay = max(2.0, float(base_delay - jitter_range))
+                    max_delay = float(base_delay + jitter_range + 1)
                     wait_time = random.uniform(min_delay, max_delay)
                 else:
                     wait_time = float(base_delay)
 
                 logger.info(f"Target {idx + 1}/{len(targets)} sent. Waiting {wait_time:.1f}s before next group...")
                 
-                # Sleep in short increments so user pause/cancel is immediately responsive
-                sleep_increments = int(wait_time)
-                for _ in range(sleep_increments):
-                    db.refresh(campaign)
-                    if campaign.status in ("cancelled", "paused", "interrupted"):
-                        break
-                    await asyncio.sleep(1)
+                # Sleep in 2-second increments so user pause/cancel is responsive and DB is checked gently
+                remaining = wait_time
+                while remaining > 0:
+                    step = min(remaining, 2.5)
+                    await asyncio.sleep(step)
+                    remaining -= step
+                    worker_heartbeat[campaign_id] = time.time()
+                    try:
+                        db.refresh(campaign)
+                        if campaign.status in ("cancelled", "paused", "interrupted"):
+                            break
+                    except Exception:
+                        pass
 
-        db.refresh(campaign)
-        if campaign.status != "cancelled":
-            campaign.status = "completed"
-            campaign.completed_at = datetime.utcnow()
-        db.commit()
+        try:
+            db.refresh(campaign)
+            if campaign.status != "cancelled":
+                campaign.status = "completed"
+                campaign.completed_at = datetime.utcnow()
+            db.commit()
+        except Exception:
+            db.rollback()
 
     except Exception as e:
         logger.error(f"Broadcast worker error in campaign {campaign_id}: {e}")
@@ -138,6 +204,7 @@ async def run_broadcast_worker(
             pass
     finally:
         active_workers.discard(campaign_id)
+        worker_heartbeat.pop(campaign_id, None)
         await service.disconnect()
         db.close()
 
@@ -187,7 +254,7 @@ async def create_campaign(
             detail="No target groups selected or found. Please sync groups first."
         )
 
-    delay_sec = payload.delay_seconds if (payload.delay_seconds is not None and payload.delay_seconds >= 10) else 60
+    delay_sec = payload.delay_seconds if (payload.delay_seconds is not None and payload.delay_seconds >= 3) else 25
 
     db_campaign = models.Campaign(
         name=payload.name.strip(),
@@ -231,13 +298,15 @@ def list_campaigns(
 ) -> Any:
     """
     List campaigns with real-time status.
-    Auto-detects interrupted campaigns (if server restarted while a campaign was marked running).
+    Auto-detects interrupted campaigns safely without terminating active workers.
     """
     campaigns = db.query(models.Campaign).order_by(models.Campaign.created_at.desc()).offset(offset).limit(limit).all()
     
-    # If a campaign is marked 'running' but no background worker is alive, mark as 'interrupted' so user can resume!
+    now = time.time()
     for c in campaigns:
-        if c.status == "running" and c.id not in active_workers:
+        last_hb = worker_heartbeat.get(c.id, 0)
+        # Only mark as interrupted if definitely not active and heartbeat has been dead for > 180 seconds
+        if c.status == "running" and c.id not in active_workers and (now - last_hb > 180):
             c.status = "interrupted"
             db.commit()
 
@@ -248,7 +317,9 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)) -> Any:
     campaign = db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if campaign.status == "running" and campaign.id not in active_workers:
+    now = time.time()
+    last_hb = worker_heartbeat.get(campaign.id, 0)
+    if campaign.status == "running" and campaign.id not in active_workers and (now - last_hb > 180):
         campaign.status = "interrupted"
         db.commit()
     return campaign
@@ -306,7 +377,7 @@ async def resume_campaign(
             account.session_string,
             targets,
             campaign.message_text,
-            campaign.delay_seconds or 60,
+            campaign.delay_seconds or 25,
             bool(campaign.use_jitter),
             account.api_id,
             account.api_hash

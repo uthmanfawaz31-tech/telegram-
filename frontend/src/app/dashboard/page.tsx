@@ -178,14 +178,22 @@ export default function Dashboard() {
         }
     };
 
-    // Poll for active or interrupted campaign status every 3 seconds
+    // Poll for active or interrupted campaign status every 3 seconds + keep phone screen awake
     useEffect(() => {
+        let wakeLock: any = null;
+        const requestWakeLock = async () => {
+            if (typeof navigator !== "undefined" && "wakeLock" in navigator && activeCampaign?.status === "running") {
+                try {
+                    wakeLock = await (navigator as any).wakeLock.request("screen");
+                } catch (err) {}
+            }
+        };
+
         const pollCampaigns = async () => {
             try {
                 const res = await fetch(`${API_BASE}/campaigns?limit=10`);
                 if (res.ok) {
                     const data: Campaign[] = await res.json();
-                    // Detect running, paused, OR interrupted campaign
                     const ongoing = data.find(c => c.status === "running" || c.status === "paused" || c.status === "interrupted");
                     setActiveCampaign(ongoing || null);
                 }
@@ -193,9 +201,26 @@ export default function Dashboard() {
         };
 
         pollCampaigns();
+        requestWakeLock();
+
+        const handleVisibilityChange = () => {
+            if (document.visibilityState === "visible") {
+                pollCampaigns();
+                requestWakeLock();
+            }
+        };
+
         const interval = setInterval(pollCampaigns, 3000);
-        return () => clearInterval(interval);
-    }, []);
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+
+        return () => {
+            clearInterval(interval);
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+            if (wakeLock) {
+                wakeLock.release().catch(() => {});
+            }
+        };
+    }, [activeCampaign?.status]);
 
     const handleSyncGroups = async () => {
         setSyncing(true);
@@ -957,8 +982,18 @@ function GroupsView({
                     </div>
 
                     {/* Quick batch selectors for 300+ groups */}
-                    <div className="flex items-center space-x-2">
+                    <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-slate-500 text-[11px]">Quick Select:</span>
+                        <button
+                            onClick={() => {
+                                const writableIds = groups.filter(g => g.can_send_messages).map(g => g.peer_id);
+                                onSelectionChange(writableIds);
+                            }}
+                            className="px-2.5 py-1 rounded-lg bg-emerald-600/30 hover:bg-emerald-600/40 text-emerald-300 border border-emerald-500/30 text-[11px] font-bold transition-all active:scale-95 shadow-sm"
+                            title="Select all writable groups with one tap"
+                        >
+                            All ({groups.filter(g => g.can_send_messages).length}) Writable
+                        </button>
                         <button
                             onClick={() => selectFirstN(100)}
                             className="px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-[11px]"
@@ -966,23 +1001,23 @@ function GroupsView({
                             First 100
                         </button>
                         <button
-                            onClick={() => selectFirstN(300)}
+                            onClick={() => selectFirstN(200)}
                             className="px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 text-[11px]"
                         >
-                            First 300
+                            First 200
                         </button>
                         <button
                             onClick={toggleSelectAll}
                             className="px-2.5 py-1 rounded-lg bg-blue-600/20 text-blue-400 border border-blue-500/20 text-[11px] font-semibold"
                         >
-                            {filteredGroups.length > 0 && filteredGroups.every(g => selectedIds.includes(g.peer_id)) ? "Deselect All" : "Select All Filtered"}
+                            {filteredGroups.length > 0 && filteredGroups.every(g => selectedIds.includes(g.peer_id)) ? "Deselect Filtered" : "Select All Filtered"}
                         </button>
                         {selectedIds.length > 0 && (
                             <button
                                 onClick={() => onSelectionChange([])}
-                                className="text-slate-400 hover:text-red-400 text-[11px] transition-colors ml-1"
+                                className="text-slate-400 hover:text-red-400 text-[11px] transition-colors ml-1 font-medium"
                             >
-                                Clear
+                                Clear ({selectedIds.length})
                             </button>
                         )}
                     </div>
@@ -1540,9 +1575,9 @@ function NewCampaignModal({
     const [delaySeconds, setDelaySeconds] = useState(() => {
         if (typeof window !== "undefined") {
             const saved = localStorage.getItem("tg_draft_campaign_delay");
-            return saved ? Number(saved) : 60;
+            return saved ? Number(saved) : 25;
         }
-        return 60;
+        return 25;
     });
     const [useJitter, setUseJitter] = useState(true);
     const [templates, setTemplates] = useState<BroadcastTemplate[]>([]);
@@ -1693,28 +1728,83 @@ function NewCampaignModal({
                         </div>
                     </div>
 
-                    {/* Broadcast timing controls */}
-                    <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-3">
-                        <div className="flex items-center justify-between">
+                    {/* Broadcast timing controls & Speed Presets */}
+                    <div className="p-4 rounded-2xl bg-white/5 border border-white/5 space-y-3.5">
+                        <div className="space-y-1.5">
+                            <label className="text-xs font-semibold text-white flex items-center justify-between">
+                                <span>Pacing & Speed Mode</span>
+                                <span className="text-[11px] text-blue-400 font-mono font-bold">{delaySeconds}s interval</span>
+                            </label>
+                            
+                            {/* Preset speed buttons */}
+                            <div className="grid grid-cols-3 gap-2 pt-1">
+                                <button
+                                    type="button"
+                                    onClick={() => setDelaySeconds(10)}
+                                    className={`py-2 px-2 rounded-xl border text-center transition-all ${
+                                        delaySeconds === 10
+                                            ? "bg-purple-600/30 border-purple-500/50 text-white font-bold ring-1 ring-purple-500"
+                                            : "bg-slate-900/60 border-white/5 hover:border-white/10 text-slate-300"
+                                    }`}
+                                >
+                                    <div className="text-[11px] font-bold flex items-center justify-center space-x-1">
+                                        <span>⚡ Turbo</span>
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 mt-0.5">10s (Fast)</div>
+                                </button>
+
+                                <button
+                                    type="button"
+                                    onClick={() => setDelaySeconds(25)}
+                                    className={`py-2 px-2 rounded-xl border text-center transition-all ${
+                                        delaySeconds === 25
+                                            ? "bg-blue-600/30 border-blue-500/50 text-white font-bold ring-1 ring-blue-500"
+                                            : "bg-slate-900/60 border-white/5 hover:border-white/10 text-slate-300"
+                                    }`}
+                                >
+                                    <div className="text-[11px] font-bold flex items-center justify-center space-x-1">
+                                        <span>⚖️ Balanced</span>
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 mt-0.5">25s (Rec.)</div>
+                                </button>
+
+                                <button
+                                    type="button"
+                                    onClick={() => setDelaySeconds(60)}
+                                    className={`py-2 px-2 rounded-xl border text-center transition-all ${
+                                        delaySeconds === 60
+                                            ? "bg-emerald-600/30 border-emerald-500/50 text-white font-bold ring-1 ring-emerald-500"
+                                            : "bg-slate-900/60 border-white/5 hover:border-white/10 text-slate-300"
+                                    }`}
+                                >
+                                    <div className="text-[11px] font-bold flex items-center justify-center space-x-1">
+                                        <span>🛡️ Safe</span>
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 mt-0.5">60s (Slow)</div>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="flex items-center justify-between pt-2 border-t border-white/5">
                             <div>
-                                <label className="text-xs font-semibold text-white">Interval Between Groups</label>
-                                <p className="text-[11px] text-slate-400">Pacing (1 minute is recommended for 300+ groups)</p>
+                                <label className="text-xs font-semibold text-white">Custom Seconds</label>
+                                <p className="text-[10px] text-slate-400">Custom interval between group posts</p>
                             </div>
                             <div className="flex items-center space-x-2">
                                 <input
                                     type="number"
-                                    min={15}
+                                    min={3}
                                     max={600}
                                     className="w-20 bg-slate-900 border border-white/10 rounded-lg px-2.5 py-1.5 text-sm text-white text-center focus:outline-none focus:border-blue-500"
                                     value={delaySeconds}
-                                    onChange={(e) => setDelaySeconds(Number(e.target.value))}
+                                    onChange={(e) => setDelaySeconds(Math.max(3, Number(e.target.value)))}
                                 />
                                 <span className="text-xs text-slate-400">sec</span>
                             </div>
                         </div>
 
                         <div className="flex items-center justify-between pt-2 border-t border-white/5 text-xs">
-                            <label className="text-slate-300">Human Jitter Randomization (±5-8s)</label>
+                            <label className="text-slate-300">Human Jitter Randomization (±2-4s)</label>
                             <input
                                 type="checkbox"
                                 checked={useJitter}
@@ -1723,7 +1813,7 @@ function NewCampaignModal({
                             />
                         </div>
 
-                        {estimatedMinutes && (
+                        {estimatedMinutes !== null && (
                             <p className="text-[11px] text-blue-300 font-medium pt-1">
                                 ⏱ Estimated run time: ~{Math.floor(estimatedMinutes / 60)}h {estimatedMinutes % 60}m for {targetCount} groups
                             </p>

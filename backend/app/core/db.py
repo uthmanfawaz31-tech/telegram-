@@ -5,11 +5,11 @@ from app.models.models import Base
 
 engine_args = {}
 if "sqlite" in settings.SQLALCHEMY_DATABASE_URI:
-    engine_args["connect_args"] = {"check_same_thread": False}
+    engine_args["connect_args"] = {"check_same_thread": False, "timeout": 30}
 
 engine = create_engine(settings.SQLALCHEMY_DATABASE_URI, **engine_args)
 
-# Enable WAL journal mode for SQLite to handle concurrent reads & writes seamlessly
+# Enable WAL journal mode and 30-second busy timeout for SQLite to handle concurrent reads & writes seamlessly
 if "sqlite" in settings.SQLALCHEMY_DATABASE_URI:
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(dbapi_connection, connection_record):
@@ -17,6 +17,7 @@ if "sqlite" in settings.SQLALCHEMY_DATABASE_URI:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
             cursor.close()
         except Exception:
             pass

@@ -168,15 +168,26 @@ class TelegramService:
             logger.error(f"Join group error: {e}")
             raise e
 
-    async def send_humanized_message(self, peer_id: Any, template_text: str, group_name: str = "Group") -> Tuple[bool, str, Optional[str]]:
+    async def send_humanized_message(
+        self,
+        peer_id: Any,
+        template_text: str,
+        group_name: str = "Group",
+        simulate_typing: bool = True,
+        typing_duration: float = 2.0
+    ) -> Tuple[bool, str, Optional[str]]:
         """
         Sends message with anti-spam safeguards:
         1. Resolves dynamic spintax and placeholders.
-        2. Simulates realistic 'typing...' action for 3-5s.
+        2. Simulates realistic 'typing...' action (customizable).
         3. Handles FloodWait automatically.
-        4. Gracefully catches permission restrictions.
+        4. Gracefully catches permission restrictions and auto-reconnects on network drops.
         """
-        await self.connect()
+        try:
+            if not self.client.is_connected():
+                await self.connect()
+        except Exception as e:
+            logger.warning(f"Connection attempt issue: {e}")
         
         # Resolve spintax and dynamic variables
         resolved_message = self.render_template(template_text, group_name=group_name)
@@ -184,25 +195,39 @@ class TelegramService:
         # Convert peer_id to int if numeric string
         target_peer = int(peer_id) if str(peer_id).lstrip('-').isdigit() else peer_id
 
-        # Human simulation: send typing action
-        try:
-            async with self.client.action(target_peer, 'typing'):
-                await asyncio.sleep(random.uniform(2.5, 4.5))
-        except Exception as e:
-            logger.warning(f"Typing action warning for {peer_id}: {e}")
+        # Human simulation: send typing action if enabled
+        if simulate_typing and typing_duration > 0:
+            try:
+                actual_duration = max(0.5, min(typing_duration, 4.0))
+                async with self.client.action(target_peer, 'typing'):
+                    await asyncio.sleep(actual_duration)
+            except Exception as e:
+                logger.warning(f"Typing action warning for {peer_id}: {e}")
 
-        # Send message with retry on FloodWait
-        max_retries = 2
+        # Send message with retry on FloodWait or temporary socket drop
+        max_retries = 3
         for attempt in range(max_retries):
             try:
+                if not self.client.is_connected():
+                    await self.connect()
                 await self.client.send_message(target_peer, resolved_message)
                 return True, resolved_message, None
             except errors.FloodWaitError as fwe:
                 logger.warning(f"Telegram FloodWait for {fwe.seconds}s on {peer_id}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(fwe.seconds + 3)
+                if attempt < max_retries - 1 and fwe.seconds <= 120:
+                    await asyncio.sleep(fwe.seconds + 2)
                     continue
-                return False, resolved_message, f"FloodWaitError: rate limited for {fwe.seconds} seconds"
+                return False, resolved_message, f"FloodWaitError: rate limited for {fwe.seconds}s"
+            except (ConnectionError, asyncio.TimeoutError, errors.RPCError) as ce:
+                logger.warning(f"Network hiccup on {peer_id} (attempt {attempt+1}/{max_retries}): {ce}")
+                await asyncio.sleep(2)
+                try:
+                    await self.connect()
+                except Exception:
+                    pass
+                if attempt < max_retries - 1:
+                    continue
+                return False, resolved_message, f"Connection error: {ce}"
             except errors.ChatWriteForbiddenError:
                 return False, resolved_message, "Permission Denied: User cannot send messages in this group"
             except errors.UserBannedInChannelError:

@@ -174,14 +174,17 @@ class TelegramService:
         template_text: str,
         group_name: str = "Group",
         simulate_typing: bool = True,
-        typing_duration: float = 2.0
+        typing_duration: float = 2.0,
+        media_path: Optional[str] = None,
+        media_url: Optional[str] = None
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Sends message with anti-spam safeguards:
         1. Resolves dynamic spintax and placeholders.
         2. Simulates realistic 'typing...' action (customizable).
-        3. Handles FloodWait automatically.
-        4. Gracefully catches permission restrictions and auto-reconnects on network drops.
+        3. Supports sending media (image/video) with text caption!
+        4. Handles FloodWait automatically.
+        5. Gracefully catches permission restrictions and auto-reconnects on network drops.
         """
         try:
             if not self.client.is_connected():
@@ -195,14 +198,22 @@ class TelegramService:
         # Convert peer_id to int if numeric string
         target_peer = int(peer_id) if str(peer_id).lstrip('-').isdigit() else peer_id
 
-        # Human simulation: send typing action if enabled
+        # Human simulation: send typing or uploading media action if enabled
         if simulate_typing and typing_duration > 0:
             try:
                 actual_duration = max(0.5, min(typing_duration, 4.0))
-                async with self.client.action(target_peer, 'typing'):
+                action_type = 'document' if (media_path or media_url) else 'typing'
+                async with self.client.action(target_peer, action_type):
                     await asyncio.sleep(actual_duration)
             except Exception as e:
                 logger.warning(f"Typing action warning for {peer_id}: {e}")
+
+        # Determine media target
+        media_target = None
+        if media_path and os.path.exists(media_path):
+            media_target = media_path
+        elif media_url and (media_url.startswith("http://") or media_url.startswith("https://")):
+            media_target = media_url
 
         # Send message with retry on FloodWait or temporary socket drop
         max_retries = 3
@@ -210,7 +221,22 @@ class TelegramService:
             try:
                 if not self.client.is_connected():
                     await self.connect()
-                await self.client.send_message(target_peer, resolved_message)
+
+                if media_target:
+                    try:
+                        # Send image or video file with message as caption
+                        await self.client.send_file(
+                            target_peer,
+                            media_target,
+                            caption=resolved_message if resolved_message else None
+                        )
+                    except errors.ChatSendMediaForbiddenError:
+                        # If group restricts media sending, fallback gracefully to text-only message
+                        logger.warning(f"Group {peer_id} forbids media, falling back to text-only message")
+                        await self.client.send_message(target_peer, resolved_message)
+                else:
+                    await self.client.send_message(target_peer, resolved_message)
+
                 return True, resolved_message, None
             except errors.FloodWaitError as fwe:
                 logger.warning(f"Telegram FloodWait for {fwe.seconds}s on {peer_id}")

@@ -59,11 +59,14 @@ async def run_broadcast_worker(
     delay_seconds: int = 25,
     use_jitter: bool = True,
     api_id: Optional[str] = None,
-    api_hash: Optional[str] = None
+    api_hash: Optional[str] = None,
+    media_path: Optional[str] = None,
+    media_url: Optional[str] = None
 ):
     """
     Resilient stateful broadcast worker capable of handling 300+ groups safely:
     - Timing: Flexible configurable interval (Turbo 10s, Balanced 25s, Safe 60s).
+    - Media: Supports uploading image/video along with text caption!
     - Anti-Sleep: Self-pings public URL so Render/cloud servers NEVER sleep while broadcasting!
     - Anti-Spam: Dynamic spintax, human typing simulation, and Telegram FloodWait auto-recovery.
     - Stateful & Resilient: Auto-reconnects on network drops, non-blocking pause/resume, and exact position recovery.
@@ -121,13 +124,19 @@ async def run_broadcast_worker(
             # Dynamic typing duration based on user pacing
             typing_dur = 1.0 if delay_seconds <= 15 else 2.5
 
-            # Send message with anti-spam safeguards (typing simulation, spintax, variables)
+            # Refresh media from campaign in case it was edited on the fly
+            curr_media_path = campaign.media_path or media_path
+            curr_media_url = campaign.media_url or media_url
+
+            # Send message with anti-spam safeguards (typing simulation, spintax, variables, media)
             success, sent_content, err_msg = await service.send_humanized_message(
                 peer_id=chat_id,
-                template_text=message_text,
+                template_text=campaign.message_text or message_text,
                 group_name=chat_title,
                 simulate_typing=True,
-                typing_duration=typing_dur
+                typing_duration=typing_dur,
+                media_path=curr_media_path,
+                media_url=curr_media_url
             )
 
             # Record log
@@ -262,6 +271,9 @@ async def create_campaign(
     while re.search(r'(https?://[^\s{}]+)\{[a-zA-Z0-9_| ]+\}', clean_message):
         clean_message = re.sub(r'(https?://[^\s{}]+)\{[a-zA-Z0-9_| ]+\}', r'\1', clean_message)
 
+    clean_media_path = payload.media_path.strip() if payload.media_path else None
+    clean_media_url = payload.media_url.strip() if payload.media_url else None
+
     db_campaign = models.Campaign(
         name=payload.name.strip(),
         message_text=clean_message,
@@ -275,6 +287,8 @@ async def create_campaign(
         delay_seconds=delay_sec,
         use_jitter=bool(payload.use_jitter),
         target_chat_ids=json.dumps(targets),
+        media_path=clean_media_path,
+        media_url=clean_media_url,
         created_at=datetime.utcnow()
     )
     db.add(db_campaign)
@@ -291,7 +305,9 @@ async def create_campaign(
         delay_sec,
         bool(payload.use_jitter),
         account.api_id,
-        account.api_hash
+        account.api_hash,
+        clean_media_path,
+        clean_media_url
     )
 
     return db_campaign
@@ -352,6 +368,10 @@ def update_campaign(
         campaign.message_text = clean_msg
     if payload.delay_seconds is not None:
         campaign.delay_seconds = max(3, payload.delay_seconds)
+    if payload.media_path is not None:
+        campaign.media_path = payload.media_path.strip() if payload.media_path else None
+    if payload.media_url is not None:
+        campaign.media_url = payload.media_url.strip() if payload.media_url else None
 
     db.commit()
     db.refresh(campaign)
@@ -421,7 +441,9 @@ async def resume_campaign(
             campaign.delay_seconds or 25,
             bool(campaign.use_jitter),
             account.api_id,
-            account.api_hash
+            account.api_hash,
+            campaign.media_path,
+            campaign.media_url
         )
 
     return campaign

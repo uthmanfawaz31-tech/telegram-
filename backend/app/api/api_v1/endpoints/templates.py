@@ -29,6 +29,8 @@ def create_template(
         name=payload.name.strip(),
         message_text=payload.message_text.strip(),
         tags=payload.tags.strip() if payload.tags else None,
+        media_path=payload.media_path.strip() if payload.media_path else None,
+        media_url=payload.media_url.strip() if payload.media_url else None,
         created_at=datetime.utcnow(),
         updated_at=datetime.utcnow()
     )
@@ -60,6 +62,10 @@ def update_template(
         template.message_text = payload.message_text.strip()
     if payload.tags is not None:
         template.tags = payload.tags.strip()
+    if payload.media_path is not None:
+        template.media_path = payload.media_path.strip() if payload.media_path else None
+    if payload.media_url is not None:
+        template.media_url = payload.media_url.strip() if payload.media_url else None
     template.updated_at = datetime.utcnow()
 
     db.commit()

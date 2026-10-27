@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from app.models.models import Base
@@ -33,3 +33,17 @@ def get_db():
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    # Automatically add media_path and media_url columns if not present
+    with engine.connect() as conn:
+        for table, col in [
+            ("broadcast_templates", "media_path TEXT"),
+            ("broadcast_templates", "media_url TEXT"),
+            ("campaigns", "media_path TEXT"),
+            ("campaigns", "media_url TEXT"),
+        ]:
+            try:
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col};"))
+                conn.commit()
+            except Exception:
+                pass
+

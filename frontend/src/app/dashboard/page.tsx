@@ -31,7 +31,11 @@ import {
     Sliders,
     Link as LinkIcon,
     Menu,
-    X
+    X,
+    Image as ImageIcon,
+    Video as VideoIcon,
+    UploadCloud,
+    Film
 } from "lucide-react";
 import Background from "@/components/Background";
 import FadeIn from "@/components/FadeIn";
@@ -65,6 +69,8 @@ interface BroadcastTemplate {
     name: string;
     message_text: string;
     tags?: string;
+    media_path?: string | null;
+    media_url?: string | null;
     created_at: string;
     updated_at: string;
 }
@@ -73,6 +79,8 @@ interface Campaign {
     id: number;
     name: string;
     message_text: string;
+    media_path?: string | null;
+    media_url?: string | null;
     status: string;
     total_targets: number;
     processed_count: number;
@@ -103,6 +111,8 @@ export default function Dashboard() {
     const [inspectCampaignId, setInspectCampaignId] = useState<number | null>(null);
     const [showEditCampaignModal, setShowEditCampaignModal] = useState(false);
     const [editingCampaignMessage, setEditingCampaignMessage] = useState("");
+    const [templateUpdateSignal, setTemplateUpdateSignal] = useState(0);
+    const [campaignDraft, setCampaignDraft] = useState<{ message: string; media_path?: string | null; media_url?: string | null } | null>(null);
     
     // Global sync notification
     const [syncing, setSyncing] = useState(false);
@@ -618,6 +628,7 @@ export default function Dashboard() {
                     )}
                     {activeTab === "Templates" && (
                         <TemplatesView
+                            refreshSignal={templateUpdateSignal}
                             onEditTemplate={(tpl) => {
                                 setEditingTemplate(tpl);
                                 setShowTemplateModal(true);
@@ -626,7 +637,12 @@ export default function Dashboard() {
                                 setEditingTemplate(null);
                                 setShowTemplateModal(true);
                             }}
-                            onUseInBroadcast={(text) => {
+                            onUseInBroadcast={(tpl) => {
+                                setCampaignDraft({
+                                    message: tpl.message_text,
+                                    media_path: tpl.media_path,
+                                    media_url: tpl.media_url
+                                });
                                 setShowCampaignModal(true);
                             }}
                         />
@@ -643,8 +659,12 @@ export default function Dashboard() {
                 {/* Modals */}
                 {showCampaignModal && (
                     <NewCampaignModal
-                        onClose={() => setShowCampaignModal(false)}
+                        onClose={() => {
+                            setShowCampaignModal(false);
+                            setCampaignDraft(null);
+                        }}
                         initialSelectedIds={selectedGroupIds}
+                        initialDraft={campaignDraft}
                     />
                 )}
 
@@ -652,6 +672,11 @@ export default function Dashboard() {
                     <TemplateEditorModal
                         template={editingTemplate}
                         onClose={() => {
+                            setShowTemplateModal(false);
+                            setEditingTemplate(null);
+                        }}
+                        onSaved={() => {
+                            setTemplateUpdateSignal(s => s + 1);
                             setShowTemplateModal(false);
                             setEditingTemplate(null);
                         }}
@@ -1140,11 +1165,13 @@ function FilterChip({ label, active, onClick }: { label: string; active: boolean
 function TemplatesView({
     onEditTemplate,
     onCreateTemplate,
-    onUseInBroadcast
+    onUseInBroadcast,
+    refreshSignal = 0
 }: {
     onEditTemplate: (tpl: BroadcastTemplate) => void;
     onCreateTemplate: () => void;
-    onUseInBroadcast: (text: string) => void;
+    onUseInBroadcast: (tpl: BroadcastTemplate) => void;
+    refreshSignal?: number;
 }) {
     const [templates, setTemplates] = useState<BroadcastTemplate[]>([]);
     const [loading, setLoading] = useState(true);
@@ -1174,7 +1201,9 @@ function TemplatesView({
                                     body: JSON.stringify({
                                         name: tpl.name,
                                         message_text: tpl.message_text,
-                                        tags: tpl.tags
+                                        tags: tpl.tags,
+                                        media_path: tpl.media_path,
+                                        media_url: tpl.media_url
                                     })
                                 });
                             }
@@ -1205,7 +1234,7 @@ function TemplatesView({
 
     useEffect(() => {
         fetchTemplates();
-    }, []);
+    }, [refreshSignal]);
 
     const handleDelete = async (id: number) => {
         if (!confirm("Are you sure you want to delete this template?")) return;
@@ -1218,6 +1247,35 @@ function TemplatesView({
         } catch (e) {}
     };
 
+    const handleDuplicate = async (tpl: BroadcastTemplate) => {
+        try {
+            const res = await fetch(`${API_BASE}/templates/`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: `${tpl.name} (Copy)`,
+                    message_text: tpl.message_text,
+                    tags: tpl.tags,
+                    media_path: tpl.media_path,
+                    media_url: tpl.media_url
+                })
+            });
+            if (res.ok) {
+                const newItem = await res.json();
+                setTemplates(prev => [newItem, ...prev]);
+                try {
+                    const backupRaw = localStorage.getItem("tg_templates_backup");
+                    let backup: BroadcastTemplate[] = backupRaw ? JSON.parse(backupRaw) : [];
+                    backup = [newItem, ...backup];
+                    localStorage.setItem("tg_templates_backup", JSON.stringify(backup));
+                } catch (bErr) {}
+                fetchTemplates();
+            }
+        } catch (e) {
+            alert("Failed to duplicate template");
+        }
+    };
+
     if (loading) return <div className="text-center py-20 text-slate-400">Loading templates...</div>;
 
     return (
@@ -1225,7 +1283,7 @@ function TemplatesView({
             <div className="flex justify-between items-center">
                 <div>
                     <h3 className="font-bold text-lg text-white">Broadcast Templates</h3>
-                    <p className="text-xs text-slate-400">Save and test reusable messages with Spintax & dynamic variables.</p>
+                    <p className="text-xs text-slate-400">Create unlimited reusable messages with Photos, Videos, Spintax & dynamic variables.</p>
                 </div>
                 <button onClick={onCreateTemplate} className="btn-primary text-xs py-2 px-4 flex items-center space-x-1.5">
                     <Plus className="w-3.5 h-3.5" />
@@ -1238,7 +1296,7 @@ function TemplatesView({
                     <FileText className="w-12 h-12 text-blue-400/50 mx-auto" />
                     <div>
                         <h4 className="font-bold text-white text-base">No Templates Saved</h4>
-                        <p className="text-xs text-slate-400 mt-1">Create your first broadcast template with Spintax syntax e.g. <code className="text-blue-400">{"{Hello|Hi|Hey}"}</code></p>
+                        <p className="text-xs text-slate-400 mt-1">Create your first broadcast template with photos, videos & Spintax syntax e.g. <code className="text-blue-400">{"{Hello|Hi|Hey}"}</code></p>
                     </div>
                     <button onClick={onCreateTemplate} className="btn-primary text-xs py-2 px-5">
                         Create Your First Template
@@ -1255,6 +1313,21 @@ function TemplatesView({
                                         {new Date(tpl.updated_at).toLocaleDateString()}
                                     </span>
                                 </div>
+
+                                {tpl.media_url && (
+                                    <div className="relative mb-2.5 rounded-xl overflow-hidden max-h-36 bg-black/40 border border-white/10 flex items-center justify-center">
+                                        {tpl.media_url.match(/\.(mp4|mov|webm|mkv)$/i) || tpl.media_path?.match(/\.(mp4|mov|webm|mkv)$/i) ? (
+                                            <video src={tpl.media_url} controls className="max-h-36 w-full object-cover rounded-xl" />
+                                        ) : (
+                                            <img src={tpl.media_url} alt="" className="max-h-36 w-full object-cover rounded-xl" />
+                                        )}
+                                        <span className="absolute top-2 right-2 px-2 py-0.5 rounded text-[10px] font-semibold uppercase bg-black/70 text-blue-300 border border-white/10 flex items-center space-x-1">
+                                            {tpl.media_url.match(/\.(mp4|mov|webm|mkv)$/i) ? <Film className="w-3 h-3" /> : <ImageIcon className="w-3 h-3" />}
+                                            <span>{tpl.media_url.match(/\.(mp4|mov|webm|mkv)$/i) ? "Video" : "Photo"}</span>
+                                        </span>
+                                    </div>
+                                )}
+
                                 <div className="p-3 rounded-xl bg-slate-900/60 border border-white/5 text-xs text-slate-300 font-mono whitespace-pre-wrap max-h-36 overflow-y-auto">
                                     {tpl.message_text}
                                 </div>
@@ -1269,14 +1342,22 @@ function TemplatesView({
                                         Edit / Test
                                     </button>
                                     <button
+                                        onClick={() => handleDuplicate(tpl)}
+                                        className="text-slate-400 hover:text-purple-300 transition-colors ml-1"
+                                        title="Duplicate template"
+                                    >
+                                        <Copy className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
                                         onClick={() => handleDelete(tpl.id)}
-                                        className="text-slate-500 hover:text-red-400 transition-colors ml-2"
+                                        className="text-slate-500 hover:text-red-400 transition-colors ml-1"
+                                        title="Delete template"
                                     >
                                         <Trash2 className="w-3.5 h-3.5" />
                                     </button>
                                 </div>
                                 <button
-                                    onClick={() => onUseInBroadcast(tpl.message_text)}
+                                    onClick={() => onUseInBroadcast(tpl)}
                                     className="px-3 py-1.5 rounded-lg bg-blue-600/20 hover:bg-blue-600/30 text-blue-400 font-semibold text-xs border border-blue-500/20 transition-all flex items-center space-x-1"
                                 >
                                     <Send className="w-3 h-3" />
@@ -1370,6 +1451,21 @@ function BroadcastsView({ onInspectLogs }: { onInspectLogs: (campaignId: number)
                                     }`}>
                                         {camp.status}
                                     </span>
+                                    {camp.media_url && (
+                                        <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center space-x-1">
+                                            {camp.media_url.match(/\.(mp4|mov|webm|mkv)$/i) || camp.media_path?.match(/\.(mp4|mov|webm|mkv)$/i) ? (
+                                                <>
+                                                    <Film className="w-3 h-3" />
+                                                    <span>Video</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <ImageIcon className="w-3 h-3" />
+                                                    <span>Photo</span>
+                                                </>
+                                            )}
+                                        </span>
+                                    )}
                                 </div>
                                 <p className="text-xs text-slate-400 line-clamp-1 italic mt-0.5 max-w-lg">"{camp.message_text}"</p>
                                 <p className="text-[11px] text-slate-500 mt-1">
@@ -1582,14 +1678,207 @@ function StatCard({ label, value, icon, subtext }: { label: string; value: strin
 }
 
 /* =========================================================================
+   MEDIA UPLOADER (PHOTOS & VIDEOS)
+   ========================================================================= */
+interface MediaUploaderProps {
+    mediaPath: string | null;
+    mediaUrl: string | null;
+    onChange: (mediaPath: string | null, mediaUrl: string | null) => void;
+}
+
+function MediaUploader({ mediaPath, mediaUrl, onChange }: MediaUploaderProps) {
+    const [uploading, setUploading] = useState(false);
+    const [uploadError, setUploadError] = useState("");
+    const [showUrlInput, setShowUrlInput] = useState(false);
+    const [urlInput, setUrlInput] = useState("");
+
+    const isVideo = (url?: string | null, path?: string | null) => {
+        const target = (url || path || "").toLowerCase();
+        return /\.(mp4|mov|webm|mkv|avi|m4v)(\?.*)?$/i.test(target);
+    };
+
+    const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+
+        if (file.size > 50 * 1024 * 1024) {
+            setUploadError("File size exceeds 50MB. Please choose a smaller photo or video.");
+            return;
+        }
+
+        setUploading(true);
+        setUploadError("");
+
+        try {
+            const formData = new FormData();
+            formData.append("file", file);
+
+            const res = await fetch(`${API_BASE}/media/upload`, {
+                method: "POST",
+                body: formData,
+            });
+
+            if (!res.ok) {
+                const data = await res.json().catch(() => ({}));
+                throw new Error(data.detail || "Failed to upload file");
+            }
+
+            const data = await res.json();
+            onChange(data.file_path, data.file_url);
+        } catch (err: any) {
+            setUploadError(err.message || "Failed to upload media");
+        } finally {
+            setUploading(false);
+            e.target.value = "";
+        }
+    };
+
+    const handleApplyUrl = () => {
+        const clean = urlInput.trim();
+        if (!clean) return;
+        onChange(null, clean);
+        setUrlInput("");
+        setShowUrlInput(false);
+    };
+
+    const handleRemove = () => {
+        onChange(null, null);
+        setUploadError("");
+    };
+
+    return (
+        <div className="space-y-2">
+            <div className="flex items-center justify-between">
+                <label className="text-xs font-semibold text-slate-300 flex items-center space-x-1.5">
+                    <ImageIcon className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Attach Photo or Video (Optional)</span>
+                </label>
+                {mediaUrl && (
+                    <span className="text-[10px] text-emerald-400 font-semibold flex items-center space-x-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        <span>Attached</span>
+                    </span>
+                )}
+            </div>
+
+            {uploadError && (
+                <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+                    {uploadError}
+                </div>
+            )}
+
+            {mediaUrl ? (
+                <div className="relative rounded-2xl bg-black/50 border border-white/10 p-2.5 flex items-center space-x-3 overflow-hidden">
+                    <div className="relative w-20 h-20 rounded-xl overflow-hidden bg-slate-900 border border-white/10 flex-shrink-0 flex items-center justify-center">
+                        {isVideo(mediaUrl, mediaPath) ? (
+                            <video src={mediaUrl} className="w-full h-full object-cover" preload="metadata" />
+                        ) : (
+                            <img src={mediaUrl} alt="Attached media" className="w-full h-full object-cover" />
+                        )}
+                        <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase bg-black/80 text-blue-300">
+                            {isVideo(mediaUrl, mediaPath) ? "Video" : "Photo"}
+                        </span>
+                    </div>
+
+                    <div className="flex-1 min-w-0 space-y-1">
+                        <p className="text-xs font-semibold text-white truncate">
+                            {mediaUrl.split("/").pop() || "Attached Media"}
+                        </p>
+                        <p className="text-[11px] text-slate-400">
+                            {isVideo(mediaUrl, mediaPath) ? "Will broadcast video with text caption" : "Will broadcast photo with text caption"}
+                        </p>
+                        <div className="flex items-center space-x-2 pt-0.5">
+                            <button
+                                type="button"
+                                onClick={handleRemove}
+                                className="text-[11px] text-red-400 hover:text-red-300 font-medium flex items-center space-x-1 transition-colors"
+                            >
+                                <Trash2 className="w-3 h-3" />
+                                <span>Remove media</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            ) : (
+                <div className="space-y-2">
+                    <div className="p-3.5 rounded-2xl bg-slate-900/60 border border-dashed border-white/15 hover:border-blue-500/50 transition-all text-center">
+                        <input
+                            type="file"
+                            id="media-file-input"
+                            accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/quicktime,video/webm"
+                            onChange={handleFileUpload}
+                            disabled={uploading}
+                            className="hidden"
+                        />
+                        <label
+                            htmlFor="media-file-input"
+                            className="cursor-pointer flex flex-col items-center justify-center space-y-2 py-1"
+                        >
+                            <div className="w-9 h-9 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-blue-400">
+                                {uploading ? (
+                                    <RefreshCw className="w-4 h-4 animate-spin" />
+                                ) : (
+                                    <UploadCloud className="w-4 h-4" />
+                                )}
+                            </div>
+                            <div>
+                                <p className="text-xs font-semibold text-white">
+                                    {uploading ? "Uploading media to server..." : "Upload Photo or Video to Broadcast"}
+                                </p>
+                                <p className="text-[10px] text-slate-400 mt-0.5">
+                                    JPG, PNG, WEBP, GIF, MP4, MOV, WEBM (up to 50MB)
+                                </p>
+                            </div>
+                        </label>
+
+                        <div className="pt-2 border-t border-white/5 flex items-center justify-center space-x-2 text-[11px]">
+                            <span className="text-slate-500">or</span>
+                            <button
+                                type="button"
+                                onClick={() => setShowUrlInput(!showUrlInput)}
+                                className="text-blue-400 hover:text-blue-300 font-medium underline transition-colors"
+                            >
+                                {showUrlInput ? "Hide URL input" : "Attach via Image/Video Web URL"}
+                            </button>
+                        </div>
+                    </div>
+
+                    {showUrlInput && (
+                        <div className="flex items-center space-x-2 p-2 bg-slate-900/80 rounded-xl border border-white/10">
+                            <input
+                                type="url"
+                                placeholder="https://example.com/image.jpg or video.mp4"
+                                value={urlInput}
+                                onChange={(e) => setUrlInput(e.target.value)}
+                                className="flex-1 bg-transparent text-xs text-white px-2 py-1 focus:outline-none"
+                            />
+                            <button
+                                type="button"
+                                onClick={handleApplyUrl}
+                                disabled={!urlInput.trim()}
+                                className="btn-primary text-xs py-1.5 px-3 disabled:opacity-50"
+                            >
+                                Attach
+                            </button>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+/* =========================================================================
    NEW CAMPAIGN MODAL
    ========================================================================= */
 function NewCampaignModal({
     onClose,
-    initialSelectedIds = []
+    initialSelectedIds = [],
+    initialDraft = null
 }: {
     onClose: () => void;
     initialSelectedIds?: string[];
+    initialDraft?: { message: string; media_path?: string | null; media_url?: string | null } | null;
 }) {
     const [name, setName] = useState(() => {
         if (typeof window !== "undefined") {
@@ -1598,11 +1887,14 @@ function NewCampaignModal({
         return "";
     });
     const [message, setMessage] = useState(() => {
+        if (initialDraft?.message) return initialDraft.message;
         if (typeof window !== "undefined") {
             return localStorage.getItem("tg_draft_campaign_message") || "";
         }
         return "";
     });
+    const [mediaPath, setMediaPath] = useState<string | null>(initialDraft?.media_path || null);
+    const [mediaUrl, setMediaUrl] = useState<string | null>(initialDraft?.media_url || null);
     const [delaySeconds, setDelaySeconds] = useState(() => {
         if (typeof window !== "undefined") {
             const saved = localStorage.getItem("tg_draft_campaign_delay");
@@ -1700,7 +1992,9 @@ function NewCampaignModal({
                     message_text: cleanMsg,
                     delay_seconds: Number(delaySeconds),
                     use_jitter: useJitter,
-                    chat_ids: initialSelectedIds.length > 0 ? initialSelectedIds : null
+                    chat_ids: initialSelectedIds.length > 0 ? initialSelectedIds : null,
+                    media_path: mediaPath,
+                    media_url: mediaUrl
                 }),
             });
             const data = await res.json();
@@ -1760,27 +2054,43 @@ function NewCampaignModal({
                             <select
                                 className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2.5 text-xs text-slate-300 focus:outline-none focus:border-blue-500 appearance-none"
                                 onChange={(e) => {
-                                    if (e.target.value) setMessage(cleanGluedTags(e.target.value));
+                                    const selectedId = Number(e.target.value);
+                                    const selected = templates.find((t) => t.id === selectedId);
+                                    if (selected) {
+                                        setMessage(cleanGluedTags(selected.message_text));
+                                        setMediaPath(selected.media_path || null);
+                                        setMediaUrl(selected.media_url || null);
+                                    }
                                 }}
                                 defaultValue=""
                             >
                                 <option value="">-- Choose a template to autofill --</option>
                                 {templates.map((tpl) => (
-                                    <option key={tpl.id} value={tpl.message_text}>
-                                        {tpl.name}
+                                    <option key={tpl.id} value={tpl.id}>
+                                        {tpl.name} {tpl.media_url ? "(with media)" : ""}
                                     </option>
                                 ))}
                             </select>
                         </div>
                     )}
 
+                    {/* Media Uploader for Images & Videos */}
+                    <MediaUploader
+                        mediaPath={mediaPath}
+                        mediaUrl={mediaUrl}
+                        onChange={(path, url) => {
+                            setMediaPath(path);
+                            setMediaUrl(url);
+                        }}
+                    />
+
                     <div>
                         <div className="flex justify-between items-center mb-1.5">
-                            <label className="text-xs font-semibold text-slate-300">Message Content</label>
+                            <label className="text-xs font-semibold text-slate-300">Message Content (or Media Caption)</label>
                             <span className="text-[10px] text-slate-400">Supports Spintax & Tags</span>
                         </div>
                         <textarea
-                            placeholder="Type your broadcast message or spintax: {Hello|Hi} everyone! Check out our updates."
+                            placeholder="Type your broadcast message or caption: {Hello|Hi} everyone! Check out our updates."
                             rows={5}
                             className="w-full bg-slate-900/80 border border-white/10 rounded-xl p-3.5 text-sm text-white focus:outline-none focus:border-blue-500 font-sans resize-none"
                             value={message}
@@ -1819,7 +2129,7 @@ function NewCampaignModal({
                             </div>
                         )}
 
-                        {message.trim() && (
+                        {(message.trim() || mediaUrl) && (
                             <div className="p-3.5 rounded-xl bg-slate-900/90 border border-white/10 space-y-2 mt-3">
                                 <div className="flex items-center justify-between text-[11px] text-slate-400">
                                     <span className="flex items-center space-x-1 font-semibold text-slate-300">
@@ -1828,8 +2138,21 @@ function NewCampaignModal({
                                     </span>
                                     <span className="text-[10px] text-emerald-400 font-medium">Link Untouched</span>
                                 </div>
-                                <div className="p-3 rounded-lg bg-black/40 border border-white/5 text-xs text-slate-200 whitespace-pre-wrap max-h-36 overflow-y-auto font-sans">
-                                    {renderPreview(message)}
+                                <div className="p-3 rounded-lg bg-black/40 border border-white/5 space-y-2 font-sans">
+                                    {mediaUrl && (
+                                        <div className="rounded-lg overflow-hidden max-h-44 bg-black/50 border border-white/10 flex items-center justify-center">
+                                            {mediaUrl.match(/\.(mp4|mov|webm|mkv)$/i) || mediaPath?.match(/\.(mp4|mov|webm|mkv)$/i) ? (
+                                                <video src={mediaUrl} controls className="max-h-44 w-full object-cover rounded-lg" />
+                                            ) : (
+                                                <img src={mediaUrl} alt="" className="max-h-44 w-full object-cover rounded-lg" />
+                                            )}
+                                        </div>
+                                    )}
+                                    {message.trim() && (
+                                        <div className="text-xs text-slate-200 whitespace-pre-wrap max-h-36 overflow-y-auto">
+                                            {renderPreview(message)}
+                                        </div>
+                                    )}
                                 </div>
                             </div>
                         )}
@@ -1946,14 +2269,19 @@ function NewCampaignModal({
    ========================================================================= */
 function TemplateEditorModal({
     template,
-    onClose
+    onClose,
+    onSaved
 }: {
     template: BroadcastTemplate | null;
     onClose: () => void;
+    onSaved?: (tpl: BroadcastTemplate) => void;
 }) {
     const [name, setName] = useState(template?.name || "");
     const [messageText, setMessageText] = useState(template?.message_text || "");
+    const [mediaPath, setMediaPath] = useState<string | null>(template?.media_path || null);
+    const [mediaUrl, setMediaUrl] = useState<string | null>(template?.media_url || null);
     const [loading, setLoading] = useState(false);
+    const [savingCopy, setSavingCopy] = useState(false);
     const [error, setError] = useState("");
     
     // Spintax test samples
@@ -1968,30 +2296,49 @@ function TemplateEditorModal({
         return res;
     };
 
-    const handleSave = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setLoading(true);
+    const handleSave = async (asNewCopy: boolean = false) => {
+        if (!name.trim()) {
+            setError("Template name is required");
+            return;
+        }
+        if (!messageText.trim()) {
+            setError("Template message text is required");
+            return;
+        }
+        if (asNewCopy) {
+            setSavingCopy(true);
+        } else {
+            setLoading(true);
+        }
         setError("");
         try {
             const cleanMsg = cleanGluedTags(messageText.trim());
-            const url = template ? `${API_BASE}/templates/${template.id}` : `${API_BASE}/templates/`;
-            const method = template ? "PUT" : "POST";
+            const isUpdate = !asNewCopy && template !== null;
+            const url = isUpdate ? `${API_BASE}/templates/${template.id}` : `${API_BASE}/templates/`;
+            const method = isUpdate ? "PUT" : "POST";
+            const templateName = asNewCopy ? `${name.trim()} (Copy)` : name.trim();
+
             const res = await fetch(url, {
                 method,
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    name: name.trim(),
-                    message_text: cleanMsg
+                    name: templateName,
+                    message_text: cleanMsg,
+                    media_path: mediaPath,
+                    media_url: mediaUrl
                 })
             });
-            if (!res.ok) throw new Error("Failed to save template");
-            const savedItem = await res.json();
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.detail || "Failed to save template");
+            }
+            const savedItem: BroadcastTemplate = await res.json();
             
             // Save to localStorage backup so it survives logout and DB wipes
             try {
                 const backupRaw = localStorage.getItem("tg_templates_backup");
                 let backup: BroadcastTemplate[] = backupRaw ? JSON.parse(backupRaw) : [];
-                if (template) {
+                if (isUpdate) {
                     backup = backup.map(t => t.id === template.id ? savedItem : t);
                 } else {
                     backup.push(savedItem);
@@ -1999,12 +2346,13 @@ function TemplateEditorModal({
                 localStorage.setItem("tg_templates_backup", JSON.stringify(backup));
             } catch (backupErr) {}
 
+            onSaved?.(savedItem);
             onClose();
-            window.location.reload();
         } catch (err: any) {
-            setError(err.message);
+            setError(err.message || "Failed to save template");
         } finally {
             setLoading(false);
+            setSavingCopy(false);
         }
     };
 
@@ -2056,7 +2404,7 @@ function TemplateEditorModal({
                         <h3 className="text-xl font-bold text-white">
                             {template ? "Edit Broadcast Template" : "New Broadcast Template"}
                         </h3>
-                        <p className="text-xs text-slate-400 mt-0.5">Test how Spintax variations look across different groups</p>
+                        <p className="text-xs text-slate-400 mt-0.5">Test how Spintax variations and attached media look across different groups</p>
                     </div>
                     <button onClick={onClose} className="text-slate-400 hover:text-white transition-colors">
                         <Plus className="w-6 h-6 rotate-45" />
@@ -2069,7 +2417,7 @@ function TemplateEditorModal({
                     </div>
                 )}
 
-                <form onSubmit={handleSave} className="space-y-4">
+                <form onSubmit={(e) => { e.preventDefault(); handleSave(false); }} className="space-y-4">
                     <div>
                         <label className="block text-xs font-semibold text-slate-300 mb-1.5">Template Name</label>
                         <input
@@ -2082,14 +2430,24 @@ function TemplateEditorModal({
                         />
                     </div>
 
+                    {/* Media attachment for templates */}
+                    <MediaUploader
+                        mediaPath={mediaPath}
+                        mediaUrl={mediaUrl}
+                        onChange={(path, url) => {
+                            setMediaPath(path);
+                            setMediaUrl(url);
+                        }}
+                    />
+
                     <div>
                         <div className="flex justify-between items-center mb-1.5">
-                            <label className="text-xs font-semibold text-slate-300">Message Text with Spintax</label>
+                            <label className="text-xs font-semibold text-slate-300">Message Text with Spintax (Caption)</label>
                             <span className="text-[10px] text-slate-400">Use {"{word1|word2}"} syntax</span>
                         </div>
                         <textarea
                             placeholder="e.g. {Hello|Hi|Greetings} members of {group_name}! {Check out|Explore} our latest news {random_emoji}"
-                            rows={6}
+                            rows={5}
                             className="w-full bg-slate-900/80 border border-white/10 rounded-xl p-3.5 text-sm text-white focus:outline-none focus:border-blue-500 font-sans resize-none"
                             value={messageText}
                             onChange={(e) => setMessageText(e.target.value)}
@@ -2148,16 +2506,25 @@ function TemplateEditorModal({
                         {previewSamples.length > 0 && (
                             <div className="space-y-2 pt-2">
                                 {previewSamples.map((sample, idx) => (
-                                    <div key={idx} className="p-3 rounded-xl bg-slate-900/90 border border-white/5 text-xs text-slate-300 font-sans">
-                                        <span className="text-[10px] text-blue-400 font-mono block mb-1">Variation #{idx + 1}:</span>
-                                        {sample}
+                                    <div key={idx} className="p-3 rounded-xl bg-slate-900/90 border border-white/5 text-xs text-slate-300 font-sans space-y-2">
+                                        <span className="text-[10px] text-blue-400 font-mono block">Variation #{idx + 1}:</span>
+                                        {mediaUrl && (
+                                            <div className="rounded-lg overflow-hidden max-h-36 bg-black/50 border border-white/10 flex items-center justify-center">
+                                                {mediaUrl.match(/\.(mp4|mov|webm|mkv)$/i) || mediaPath?.match(/\.(mp4|mov|webm|mkv)$/i) ? (
+                                                    <video src={mediaUrl} controls className="max-h-36 w-full object-cover rounded-lg" />
+                                                ) : (
+                                                    <img src={mediaUrl} alt="" className="max-h-36 w-full object-cover rounded-lg" />
+                                                )}
+                                            </div>
+                                        )}
+                                        <p>{sample}</p>
                                     </div>
                                 ))}
                             </div>
                         )}
                     </div>
 
-                    <div className="flex justify-end space-x-3 pt-2">
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
                         <button
                             type="button"
                             onClick={onClose}
@@ -2165,13 +2532,26 @@ function TemplateEditorModal({
                         >
                             Cancel
                         </button>
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="btn-primary text-xs py-2.5 px-6"
-                        >
-                            {loading ? "Saving..." : "Save Template"}
-                        </button>
+                        <div className="flex items-center space-x-2">
+                            {template && (
+                                <button
+                                    type="button"
+                                    onClick={() => handleSave(true)}
+                                    disabled={loading || savingCopy}
+                                    className="px-4 py-2.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/20 text-xs font-semibold flex items-center space-x-1.5 transition-all disabled:opacity-50"
+                                >
+                                    <Copy className="w-3.5 h-3.5" />
+                                    <span>{savingCopy ? "Copying..." : "Save as New Copy"}</span>
+                                </button>
+                            )}
+                            <button
+                                type="submit"
+                                disabled={loading || savingCopy}
+                                className="btn-primary text-xs py-2.5 px-6"
+                            >
+                                {loading ? "Saving..." : template ? "Save Changes" : "Create Template"}
+                            </button>
+                        </div>
                     </div>
                 </form>
             </motion.div>
@@ -2344,6 +2724,8 @@ function EditCampaignMessageModal({
 }) {
     const [name, setName] = useState(campaign.name);
     const [message, setMessage] = useState(initialMessage || campaign.message_text);
+    const [mediaPath, setMediaPath] = useState<string | null>(campaign.media_path || null);
+    const [mediaUrl, setMediaUrl] = useState<string | null>(campaign.media_url || null);
     const [delaySeconds, setDelaySeconds] = useState(campaign.delay_seconds || 25);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
@@ -2411,7 +2793,9 @@ function EditCampaignMessageModal({
                 body: JSON.stringify({
                     name: name.trim(),
                     message_text: cleanMsg,
-                    delay_seconds: Number(delaySeconds)
+                    delay_seconds: Number(delaySeconds),
+                    media_path: mediaPath,
+                    media_url: mediaUrl
                 })
             });
             const data = await res.json();
@@ -2497,13 +2881,23 @@ function EditCampaignMessageModal({
                         </div>
                     </div>
 
+                    {/* Media attachment */}
+                    <MediaUploader
+                        mediaPath={mediaPath}
+                        mediaUrl={mediaUrl}
+                        onChange={(path, url) => {
+                            setMediaPath(path);
+                            setMediaUrl(url);
+                        }}
+                    />
+
                     <div>
                         <div className="flex justify-between items-center mb-1.5">
-                            <label className="text-xs font-semibold text-slate-300">Message Content</label>
+                            <label className="text-xs font-semibold text-slate-300">Message Content (Caption)</label>
                             <span className="text-[10px] text-emerald-400 font-medium">Links are protected against tampering</span>
                         </div>
                         <textarea
-                            rows={8}
+                            rows={6}
                             className="w-full bg-slate-900/80 border border-white/10 rounded-xl p-3.5 text-sm text-white focus:outline-none focus:border-blue-500 font-sans resize-none"
                             value={message}
                             onChange={(e) => setMessage(e.target.value)}
@@ -2542,7 +2936,7 @@ function EditCampaignMessageModal({
                         </div>
                     )}
 
-                    {message.trim() && (
+                    {(message.trim() || mediaUrl) && (
                         <div className="p-3.5 rounded-xl bg-slate-900/90 border border-white/10 space-y-2">
                             <div className="flex items-center justify-between text-[11px] text-slate-400">
                                 <span className="flex items-center space-x-1 font-semibold text-slate-300">
@@ -2551,8 +2945,21 @@ function EditCampaignMessageModal({
                                 </span>
                                 <span className="text-[10px] text-emerald-400 font-medium">Link Intact</span>
                             </div>
-                            <div className="p-3 rounded-lg bg-black/40 border border-white/5 text-xs text-slate-200 whitespace-pre-wrap max-h-40 overflow-y-auto font-sans">
-                                {renderPreview(message)}
+                            <div className="p-3 rounded-lg bg-black/40 border border-white/5 space-y-2 font-sans">
+                                {mediaUrl && (
+                                    <div className="rounded-lg overflow-hidden max-h-44 bg-black/50 border border-white/10 flex items-center justify-center">
+                                        {mediaUrl.match(/\.(mp4|mov|webm|mkv)$/i) || mediaPath?.match(/\.(mp4|mov|webm|mkv)$/i) ? (
+                                            <video src={mediaUrl} controls className="max-h-44 w-full object-cover rounded-lg" />
+                                        ) : (
+                                            <img src={mediaUrl} alt="" className="max-h-44 w-full object-cover rounded-lg" />
+                                        )}
+                                    </div>
+                                )}
+                                {message.trim() && (
+                                    <div className="text-xs text-slate-200 whitespace-pre-wrap max-h-40 overflow-y-auto">
+                                        {renderPreview(message)}
+                                    </div>
+                                )}
                             </div>
                         </div>
                     )}

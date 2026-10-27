@@ -68,6 +68,8 @@ class BroadcastTemplateBase(BaseModel):
     name: str
     message_text: str
     tags: Optional[str] = None
+    media_path: Optional[str] = None
+    media_url: Optional[str] = None
 
 class BroadcastTemplateCreate(BroadcastTemplateBase):
     pass
@@ -76,6 +78,8 @@ class BroadcastTemplateUpdate(BaseModel):
     name: Optional[str] = None
     message_text: Optional[str] = None
     tags: Optional[str] = None
+    media_path: Optional[str] = None
+    media_url: Optional[str] = None
 
 class BroadcastTemplateResponse(BroadcastTemplateBase):
     id: int
@@ -112,11 +116,15 @@ class CampaignCreate(BaseModel):
     delay_seconds: Optional[int] = 25 # default delay
     use_jitter: Optional[bool] = True
     scheduled_at: Optional[datetime] = None
+    media_path: Optional[str] = None
+    media_url: Optional[str] = None
 
 class CampaignUpdate(BaseModel):
     name: Optional[str] = None
     message_text: Optional[str] = None
     delay_seconds: Optional[int] = None
+    media_path: Optional[str] = None
+    media_url: Optional[str] = None
 
 class CampaignResponse(BaseModel):
     id: int
@@ -132,11 +140,14 @@ class CampaignResponse(BaseModel):
     delay_seconds: int
     use_jitter: bool
     target_chat_ids: Optional[str] = None
+    media_path: Optional[str] = None
+    media_url: Optional[str] = None
     scheduled_at: Optional[datetime] = None
     created_at: datetime
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
     logs: Optional[List[BroadcastLogResponse]] = None
+
 
     class Config:
         from_attributes = True

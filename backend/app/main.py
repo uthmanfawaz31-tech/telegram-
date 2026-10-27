@@ -46,7 +46,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+from app.api.api_v1.endpoints import media
+app.include_router(media.router, prefix="/media", tags=["media"])
 app.include_router(api_router, prefix=settings.API_V1_STR)
+
+@app.get("/ping")
+@app.get("/api/v1/ping")
+def ping():
+    return {"status": "ok", "service": "telepro-backend"}
+
+@app.get("/version")
+@app.get("/api/v1/version")
+def version():
+    return {
+        "status": "online",
+        "version": "media-ready",
+        "has_media": True
+    }
 
 @app.get("/")
 def root():

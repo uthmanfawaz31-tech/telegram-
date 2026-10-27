@@ -32,18 +32,21 @@ def get_db():
         db.close()
 
 def init_db():
-    Base.metadata.create_all(bind=engine)
-    # Automatically add media_path and media_url columns if not present
-    with engine.connect() as conn:
-        for table, col in [
-            ("broadcast_templates", "media_path TEXT"),
-            ("broadcast_templates", "media_url TEXT"),
-            ("campaigns", "media_path TEXT"),
-            ("campaigns", "media_url TEXT"),
-        ]:
-            try:
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        print(f"Error creating tables: {e}")
+
+    # Safely ensure media columns exist without aborting startup
+    for table, col in [
+        ("broadcast_templates", "media_path TEXT"),
+        ("broadcast_templates", "media_url TEXT"),
+        ("campaigns", "media_path TEXT"),
+        ("campaigns", "media_url TEXT"),
+    ]:
+        try:
+            with engine.begin() as conn:
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {col};"))
-                conn.commit()
-            except Exception:
-                pass
+        except Exception:
+            pass
 

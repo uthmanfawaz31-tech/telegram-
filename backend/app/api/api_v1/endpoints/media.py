@@ -1,6 +1,7 @@
 import os
 import uuid
 import shutil
+import base64
 import logging
 from typing import Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException
@@ -24,6 +25,10 @@ class MediaUploadResponse(BaseModel):
     file_url: str
     filename: str
     media_type: str # "image" or "video"
+
+class Base64UploadRequest(BaseModel):
+    data: str
+    filename: Optional[str] = "upload.png"
 
 @router.post("/upload", response_model=MediaUploadResponse)
 async def upload_media(file: UploadFile = File(...)):
@@ -58,6 +63,48 @@ async def upload_media(file: UploadFile = File(...)):
     file_url = f"{public_url}/api/v1/media/{unique_name}"
 
     logger.info(f"Media uploaded successfully: {destination_path} ({media_type})")
+
+    return MediaUploadResponse(
+        file_path=destination_path,
+        file_url=file_url,
+        filename=unique_name,
+        media_type=media_type
+    )
+
+@router.post("/upload-base64", response_model=MediaUploadResponse)
+async def upload_media_base64(payload: Base64UploadRequest):
+    """
+    Upload media encoded as base64 string.
+    """
+    raw_data = payload.data
+    filename = payload.filename or "upload.png"
+    
+    if "," in raw_data and raw_data.startswith("data:"):
+        _, base64_str = raw_data.split(",", 1)
+    else:
+        base64_str = raw_data
+
+    try:
+        decoded_bytes = base64.b64decode(base64_str)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 payload")
+
+    _, ext = os.path.splitext(filename.lower())
+    if not ext or ext not in ALLOWED_EXTENSIONS:
+        ext = ".png"
+
+    media_type = "image" if ext in IMAGE_EXTENSIONS else "video"
+    unique_name = f"{uuid.uuid4().hex[:12]}_{os.path.basename(filename)}"
+    destination_path = os.path.join(UPLOAD_DIR, unique_name)
+
+    try:
+        with open(destination_path, "wb") as buffer:
+            buffer.write(decoded_bytes)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
+
+    public_url = os.getenv("RENDER_EXTERNAL_URL", "https://telepro-back.onrender.com").rstrip("/")
+    file_url = f"{public_url}/api/v1/media/{unique_name}"
 
     return MediaUploadResponse(
         file_path=destination_path,

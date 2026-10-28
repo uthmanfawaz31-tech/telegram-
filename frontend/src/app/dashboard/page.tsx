@@ -1709,28 +1709,61 @@ function MediaUploader({ mediaPath, mediaUrl, onChange }: MediaUploaderProps) {
         setUploading(true);
         setUploadError("");
 
-        try {
-            const formData = new FormData();
-            formData.append("file", file);
+        // Read local file as data URL for instant live preview and fallback
+        const reader = new FileReader();
+        reader.onload = async () => {
+            const dataUrl = reader.result as string;
 
-            const res = await fetch(`${API_BASE}/media/upload`, {
-                method: "POST",
-                body: formData,
-            });
+            // Immediately set the dataUrl so preview is instantaneous and reliable
+            onChange(null, dataUrl);
 
-            if (!res.ok) {
-                const data = await res.json().catch(() => ({}));
-                throw new Error(data.detail || "Failed to upload file");
+            try {
+                // Tier 1: Multipart upload to API server
+                const formData = new FormData();
+                formData.append("file", file);
+
+                const res = await fetch(`${API_BASE}/media/upload`, {
+                    method: "POST",
+                    body: formData,
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    onChange(data.file_path, data.file_url);
+                    setUploading(false);
+                    return;
+                }
+
+                // Tier 2: Base64 JSON upload fallback
+                const b64Res = await fetch(`${API_BASE}/media/upload-base64`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        data: dataUrl,
+                        filename: file.name
+                    })
+                });
+
+                if (b64Res.ok) {
+                    const data = await b64Res.json();
+                    onChange(data.file_path, data.file_url);
+                    setUploading(false);
+                    return;
+                }
+            } catch (err) {
+                // Backend may still be deploying; local dataUrl remains active so user is never blocked
+            } finally {
+                setUploading(false);
             }
+        };
 
-            const data = await res.json();
-            onChange(data.file_path, data.file_url);
-        } catch (err: any) {
-            setUploadError(err.message || "Failed to upload media");
-        } finally {
+        reader.onerror = () => {
+            setUploadError("Failed to read selected file");
             setUploading(false);
-            e.target.value = "";
-        }
+        };
+
+        reader.readAsDataURL(file);
+        e.target.value = "";
     };
 
     const handleApplyUrl = () => {

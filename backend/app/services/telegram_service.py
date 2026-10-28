@@ -214,6 +214,16 @@ class TelegramService:
             media_target = media_path
         elif media_url and (media_url.startswith("http://") or media_url.startswith("https://")):
             media_target = media_url
+        elif media_url and media_url.startswith("data:"):
+            try:
+                import base64
+                import io
+                _, b64 = media_url.split(",", 1) if "," in media_url else ("", media_url)
+                file_bytes = io.BytesIO(base64.b64decode(b64))
+                file_bytes.name = "media.png" if "image" in media_url[:30] else "media.mp4"
+                media_target = file_bytes
+            except Exception as e:
+                logger.warning(f"Failed to decode base64 data url: {e}")
 
         # Send message with retry on FloodWait or temporary socket drop
         max_retries = 3

@@ -181,10 +181,11 @@ class TelegramService:
         """
         Sends message with anti-spam safeguards:
         1. Resolves dynamic spintax and placeholders.
-        2. Simulates realistic 'typing...' action (customizable).
+        2. Simulates realistic 'typing...' or 'uploading document' action.
         3. Supports sending media (image/video) with text caption!
-        4. Handles FloodWait automatically.
-        5. Gracefully catches permission restrictions and auto-reconnects on network drops.
+        4. Gracefully handles captions > 1024 characters (Telegram's media caption limit).
+        5. Automatically falls back to text-only message if a group restricts media.
+        6. Handles FloodWait and permission restrictions safely.
         """
         try:
             if not self.client.is_connected():
@@ -233,16 +234,41 @@ class TelegramService:
                     await self.connect()
 
                 if media_target:
+                    # Reset stream position if BytesIO
+                    if hasattr(media_target, "seek"):
+                        media_target.seek(0)
+
                     try:
-                        # Send image or video file with message as caption
-                        await self.client.send_file(
-                            target_peer,
-                            media_target,
-                            caption=resolved_message if resolved_message else None
-                        )
-                    except errors.ChatSendMediaForbiddenError:
-                        # If group restricts media sending, fallback gracefully to text-only message
-                        logger.warning(f"Group {peer_id} forbids media, falling back to text-only message")
+                        # Telegram caption limit is strictly 1024 characters for regular MTProto accounts.
+                        # If message is longer than 1024 characters, sending caption directly will fail with MediaCaptionTooLongError.
+                        if len(resolved_message) <= 1024:
+                            await self.client.send_file(
+                                target_peer,
+                                media_target,
+                                caption=resolved_message if resolved_message else None
+                            )
+                        else:
+                            # Deliver media first, followed immediately by the full long message!
+                            await self.client.send_file(target_peer, media_target)
+                            await self.client.send_message(target_peer, resolved_message)
+                    except (errors.MediaCaptionTooLongError, ValueError):
+                        # Caption length or markdown entity parsing error: send media then full text, or fallback to text
+                        try:
+                            if hasattr(media_target, "seek"):
+                                media_target.seek(0)
+                            await self.client.send_file(target_peer, media_target)
+                            await self.client.send_message(target_peer, resolved_message)
+                        except Exception:
+                            await self.client.send_message(target_peer, resolved_message)
+                    except (errors.ChatSendMediaForbiddenError,
+                            errors.ChatSendPhotosForbiddenError,
+                            errors.ChatSendVideosForbiddenError,
+                            errors.ChatSendDocsForbiddenError,
+                            errors.PhotoInvalidDimensionsError,
+                            errors.PhotoCropSizeSmallError,
+                            Exception) as media_err:
+                        # Any media permission restriction or upload glitch: fall back seamlessly to sending the text message!
+                        logger.warning(f"Media sending issue for {peer_id} ({media_err}), falling back to text-only delivery")
                         await self.client.send_message(target_peer, resolved_message)
                 else:
                     await self.client.send_message(target_peer, resolved_message)
@@ -254,6 +280,14 @@ class TelegramService:
                     await asyncio.sleep(fwe.seconds + 2)
                     continue
                 return False, resolved_message, f"FloodWaitError: rate limited for {fwe.seconds}s"
+            except errors.ChatWriteForbiddenError:
+                return False, resolved_message, "Permission Denied: User cannot send messages in this group"
+            except errors.UserBannedInChannelError:
+                return False, resolved_message, "User is banned from posting in this channel/group"
+            except errors.ChatAdminRequiredError:
+                return False, resolved_message, "Only admins can post messages here"
+            except errors.SlowModeWaitError as smwe:
+                return False, resolved_message, f"Slow mode active (wait {smwe.seconds}s)"
             except (ConnectionError, asyncio.TimeoutError, errors.RPCError) as ce:
                 logger.warning(f"Network hiccup on {peer_id} (attempt {attempt+1}/{max_retries}): {ce}")
                 await asyncio.sleep(2)
@@ -264,14 +298,6 @@ class TelegramService:
                 if attempt < max_retries - 1:
                     continue
                 return False, resolved_message, f"Connection error: {ce}"
-            except errors.ChatWriteForbiddenError:
-                return False, resolved_message, "Permission Denied: User cannot send messages in this group"
-            except errors.UserBannedInChannelError:
-                return False, resolved_message, "User is banned from posting in this channel/group"
-            except errors.ChatAdminRequiredError:
-                return False, resolved_message, "Only admins can post messages here"
-            except errors.SlowModeWaitError as smwe:
-                return False, resolved_message, f"Slow mode active (wait {smwe.seconds}s)"
             except Exception as e:
                 return False, resolved_message, str(e)
 

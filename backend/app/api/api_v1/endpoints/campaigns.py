@@ -93,6 +93,43 @@ async def run_broadcast_worker(
         # Send initial keep-alive ping right at start
         await send_keep_alive_ping()
 
+        # Ensure media is locally cached on disk once for zero-drop delivery across all 300+ targets
+        local_media_path = None
+        target_media = campaign.media_path or media_path
+        target_url = campaign.media_url or media_url
+
+        if target_media and os.path.exists(target_media):
+            local_media_path = target_media
+        elif target_url and target_url.startswith("data:"):
+            try:
+                import base64
+                from app.api.api_v1.endpoints.media import UPLOAD_DIR
+                os.makedirs(UPLOAD_DIR, exist_ok=True)
+                ext = ".jpg" if "image" in target_url[:30] else ".mp4"
+                save_path = os.path.join(UPLOAD_DIR, f"campaign_{campaign_id}{ext}")
+                _, b64 = target_url.split(",", 1) if "," in target_url else ("", target_url)
+                with open(save_path, "wb") as f:
+                    f.write(base64.b64decode(b64))
+                local_media_path = save_path
+            except Exception as pe:
+                logger.warning(f"Could not cache base64 media locally: {pe}")
+        elif target_url and (target_url.startswith("http://") or target_url.startswith("https://")):
+            try:
+                from app.api.api_v1.endpoints.media import UPLOAD_DIR
+                os.makedirs(UPLOAD_DIR, exist_ok=True)
+                fname = target_url.rstrip("/").split("/")[-1].split("?")[0]
+                local_candidate = os.path.join(UPLOAD_DIR, fname)
+                if os.path.exists(local_candidate):
+                    local_media_path = local_candidate
+                else:
+                    import urllib.request
+                    save_path = os.path.join(UPLOAD_DIR, f"cached_{campaign_id}_{fname}")
+                    urllib.request.urlretrieve(target_url, save_path)
+                    if os.path.exists(save_path):
+                        local_media_path = save_path
+            except Exception as ue:
+                logger.warning(f"Could not download remote media locally: {ue}")
+
         for idx in range(campaign.current_index, len(targets)):
             target = targets[idx]
             chat_id = target["id"]
@@ -103,12 +140,9 @@ async def run_broadcast_worker(
             while True:
                 try:
                     db.refresh(campaign)
-                    if campaign.status == "cancelled":
-                        logger.info(f"Broadcast {campaign_id} cancelled.")
+                    if campaign.status in ("cancelled", "paused", "interrupted"):
+                        logger.info(f"Broadcast {campaign_id} status is '{campaign.status}'. Stopping worker.")
                         return
-                    elif campaign.status in ("paused", "interrupted"):
-                        await asyncio.sleep(4)
-                        continue
                 except Exception as dbe:
                     logger.warning(f"DB status check notice: {dbe}")
                 break
@@ -124,20 +158,22 @@ async def run_broadcast_worker(
             # Dynamic typing duration based on user pacing
             typing_dur = 1.0 if delay_seconds <= 15 else 2.5
 
-            # Refresh media from campaign in case it was edited on the fly
-            curr_media_path = campaign.media_path or media_path
-            curr_media_url = campaign.media_url or media_url
-
             # Send message with anti-spam safeguards (typing simulation, spintax, variables, media)
-            success, sent_content, err_msg = await service.send_humanized_message(
-                peer_id=chat_id,
-                template_text=campaign.message_text or message_text,
-                group_name=chat_title,
-                simulate_typing=True,
-                typing_duration=typing_dur,
-                media_path=curr_media_path,
-                media_url=curr_media_url
-            )
+            try:
+                success, sent_content, err_msg = await service.send_humanized_message(
+                    peer_id=chat_id,
+                    template_text=campaign.message_text or message_text,
+                    group_name=chat_title,
+                    simulate_typing=True,
+                    typing_duration=typing_dur,
+                    media_path=local_media_path,
+                    media_url=None if local_media_path else (campaign.media_url or media_url)
+                )
+            except Exception as send_err:
+                logger.error(f"Error in send_humanized_message for {chat_id} ({chat_title}): {send_err}")
+                success = False
+                sent_content = None
+                err_msg = str(send_err)
 
             # Record log
             try:
@@ -205,7 +241,8 @@ async def run_broadcast_worker(
             db.rollback()
 
     except Exception as e:
-        logger.error(f"Broadcast worker error in campaign {campaign_id}: {e}")
+        import traceback
+        logger.error(f"Broadcast worker error in campaign {campaign_id}: {traceback.format_exc()}")
         try:
             db.refresh(campaign)
             campaign.status = "interrupted"

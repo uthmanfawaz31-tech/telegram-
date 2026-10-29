@@ -9,3 +9,4 @@ passlib[bcrypt]
 telethon
 python-dotenv
 pillow
+httpx

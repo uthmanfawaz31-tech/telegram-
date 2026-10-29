@@ -35,7 +35,11 @@ import {
     Image as ImageIcon,
     Video as VideoIcon,
     UploadCloud,
-    Film
+    Film,
+    ScanSearch,
+    ExternalLink,
+    CheckCheck,
+    Loader2
 } from "lucide-react";
 import Background from "@/components/Background";
 import FadeIn from "@/components/FadeIn";
@@ -360,6 +364,15 @@ export default function Dashboard() {
                             setIsSidebarVisible(false);
                         }}
                     />
+                    <NavItem
+                        icon={<ScanSearch className="w-4 h-4" />}
+                        label="Fiverr Scout"
+                        active={activeTab === "FiverrScout"}
+                        onClick={() => {
+                            setActiveTab("FiverrScout");
+                            setIsSidebarVisible(false);
+                        }}
+                    />
                 </nav>
 
                 <div className="p-4 mt-auto border-t border-white/5">
@@ -412,6 +425,7 @@ export default function Dashboard() {
                                 {activeTab === "Broadcasts" && "Control running campaigns with 1-minute smart timing and view live delivery logs."}
                                 {activeTab === "Analytics" && "Performance metrics, group delivery rates, and reach insights."}
                                 {activeTab === "Settings" && "Telegram MTProto credentials, delay preferences, and account management."}
+                                {activeTab === "FiverrScout" && "Paste a Fiverr seller profile URL to extract reviewers and highlight those active on Telegram."}
                             </p>
                         </div>
                     </div>
@@ -601,7 +615,18 @@ export default function Dashboard() {
                             </div>
                             <div className="flex justify-between items-center text-[11px] text-slate-500 mt-2">
                                 <span>Successful: <strong className="text-emerald-400">{activeCampaign.success_count}</strong></span>
-                                <span>Failed/Skipped: <strong className="text-red-400">{activeCampaign.failed_count}</strong></span>
+                                {activeCampaign.failed_count > 0 ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => setInspectCampaignId(activeCampaign.id)}
+                                        className="text-red-400 hover:text-red-300 transition-colors underline decoration-dotted underline-offset-2 font-medium"
+                                        title="Click to view why groups failed or were skipped"
+                                    >
+                                        Failed/Skipped: <strong>{activeCampaign.failed_count}</strong> (View Reasons)
+                                    </button>
+                                ) : (
+                                    <span>Failed/Skipped: <strong className="text-red-400">{activeCampaign.failed_count}</strong></span>
+                                )}
                                 <span>
                                     Est. Time Remaining: ~{Math.max(0, Math.round(((activeCampaign.total_targets - activeCampaign.processed_count) * (activeCampaign.delay_seconds || 60)) / 60))} mins
                                 </span>
@@ -654,6 +679,7 @@ export default function Dashboard() {
                     {activeTab === "Settings" && (
                         <SettingsView onRelogin={() => router.push("/")} />
                     )}
+                    {activeTab === "FiverrScout" && <FiverrScoutView />}
                 </FadeIn>
 
                 {/* Modals */}
@@ -1729,7 +1755,7 @@ function MediaUploader({ mediaPath, mediaUrl, onChange }: MediaUploaderProps) {
 
                 if (res.ok) {
                     const data = await res.json();
-                    onChange(data.file_path, data.file_url);
+                    onChange(data.file_path, dataUrl || data.file_url);
                     setUploading(false);
                     return;
                 }
@@ -1746,7 +1772,7 @@ function MediaUploader({ mediaPath, mediaUrl, onChange }: MediaUploaderProps) {
 
                 if (b64Res.ok) {
                     const data = await b64Res.json();
-                    onChange(data.file_path, data.file_url);
+                    onChange(data.file_path, dataUrl || data.file_url);
                     setUploading(false);
                     return;
                 }
@@ -3015,6 +3041,412 @@ function EditCampaignMessageModal({
                     </div>
                 </form>
             </motion.div>
+        </div>
+    );
+}
+
+
+/* =========================================================================
+   FIVERR SCOUT VIEW
+   Paste a Fiverr seller URL → scrape all reviewer usernames → check Telegram
+   ========================================================================= */
+
+interface ReviewerResult {
+    fiverr_username: string;
+    display_name: string;
+    telegram_found: boolean;
+    telegram_username?: string | null;
+    telegram_name?: string | null;
+    telegram_id?: string | null;
+}
+
+interface FiverrScanResponse {
+    fiverr_url: string;
+    seller_username: string;
+    gig_slug?: string | null;
+    total_reviewers_scanned: number;
+    total_reviews_on_profile: number;
+    active_on_telegram: number;
+    not_on_telegram: number;
+    results: ReviewerResult[];
+    scan_duration_seconds: number;
+    error?: string | null;
+}
+
+function FiverrScoutView() {
+    const [url, setUrl] = useState("");
+    const [fiverrCookies, setFiverrCookies] = useState("");
+    const [showCookieHelp, setShowCookieHelp] = useState(false);
+    const [scanning, setScanning] = useState(false);
+    const [scanResult, setScanResult] = useState<FiverrScanResponse | null>(null);
+    const [error, setError] = useState("");
+    const [filter, setFilter] = useState<"all" | "active" | "inactive">("all");
+    const [searchQuery, setSearchQuery] = useState("");
+
+    const handleScan = async () => {
+        if (!url.trim()) {
+            setError("Please enter a Fiverr seller profile URL.");
+            return;
+        }
+        setScanning(true);
+        setError("");
+        setScanResult(null);
+
+        try {
+            const res = await fetch(`${API_BASE}/fiverr/scan`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ fiverr_url: url.trim(), fiverr_cookies: fiverrCookies.trim() || undefined }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || "Scan failed");
+            setScanResult(data);
+        } catch (err: any) {
+            setError(err.message || "Failed to scan profile");
+        } finally {
+            setScanning(false);
+        }
+    };
+
+    const filteredResults = useMemo(() => {
+        if (!scanResult) return [];
+        return scanResult.results.filter((r) => {
+            if (filter === "active" && !r.telegram_found) return false;
+            if (filter === "inactive" && r.telegram_found) return false;
+            if (searchQuery.trim()) {
+                const q = searchQuery.toLowerCase();
+                return (
+                    r.fiverr_username.toLowerCase().includes(q) ||
+                    r.display_name.toLowerCase().includes(q) ||
+                    (r.telegram_username || "").toLowerCase().includes(q) ||
+                    (r.telegram_name || "").toLowerCase().includes(q)
+                );
+            }
+            return true;
+        });
+    }, [scanResult, filter, searchQuery]);
+
+    const copyActiveUsernames = () => {
+        if (!scanResult) return;
+        const active = scanResult.results
+            .filter((r) => r.telegram_found && r.telegram_username)
+            .map((r) => `@${r.telegram_username}`)
+            .join("\n");
+        navigator.clipboard.writeText(active).catch(() => {});
+    };
+
+    return (
+        <div className="space-y-6">
+            {/* Input Card */}
+            <div className="blue-glass p-6 rounded-3xl border border-white/5 space-y-5">
+                <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 rounded-xl bg-green-500/20 border border-green-500/30 flex items-center justify-center text-green-400">
+                        <ScanSearch className="w-5 h-5" />
+                    </div>
+                    <div>
+                        <h3 className="font-bold text-white text-base">Fiverr Profile Scanner</h3>
+                        <p className="text-xs text-slate-400">
+                            Paste a Fiverr seller or gig URL — we extract publicly available reviewer usernames and instantly check which ones have an active Telegram account.
+                        </p>
+                    </div>
+                </div>
+
+                {/* URL Input */}
+                <div className="space-y-2">
+                    <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                        Fiverr Seller Profile URL
+                    </label>
+                    <div className="flex flex-col md:flex-row gap-3">
+                        <input
+                            type="url"
+                            value={url}
+                            onChange={(e) => setUrl(e.target.value)}
+                            placeholder="https://www.fiverr.com/username"
+                            disabled={scanning}
+                            className="flex-1 bg-slate-900/80 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-green-500 transition-all"
+                            onKeyDown={(e) => e.key === "Enter" && handleScan()}
+                        />
+                        <button
+                            onClick={handleScan}
+                            disabled={scanning || !url.trim()}
+                            className="px-6 py-3 rounded-xl bg-green-600 hover:bg-green-500 disabled:opacity-50 text-white text-sm font-bold flex items-center space-x-2 transition-all active:scale-95 shadow-lg shadow-green-900/30 whitespace-nowrap"
+                        >
+                            {scanning ? (
+                                <>
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                    <span>Scanning…</span>
+                                </>
+                            ) : (
+                                <>
+                                    <ScanSearch className="w-4 h-4" />
+                                    <span>Scan Profile</span>
+                                </>
+                            )}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Fiverr Session Cookies */}
+                <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                        <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                            Fiverr Session Cookies
+                            <span className="ml-2 font-normal text-green-400 normal-case">(required to scan all reviews)</span>
+                        </label>
+                        <button
+                            onClick={() => setShowCookieHelp(!showCookieHelp)}
+                            className="text-xs text-blue-400 hover:text-blue-300 underline"
+                        >
+                            {showCookieHelp ? "Hide instructions" : "How to get cookies?"}
+                        </button>
+                    </div>
+
+                    {showCookieHelp && (
+                        <div className="p-4 rounded-xl bg-blue-950/40 border border-blue-500/20 text-xs text-slate-300 space-y-2">
+                            <p className="font-semibold text-blue-300">Get your Fiverr session cookies:</p>
+                            <ol className="space-y-1.5 list-none">
+                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">1.</span><span>Open fiverr.com in Chrome while logged in</span></li>
+                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">2.</span><span>Press F12 to open DevTools → click the Network tab</span></li>
+                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">3.</span><span>Press F5 to refresh the page</span></li>
+                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">4.</span><span>Click the first request in the list (says www.fiverr.com)</span></li>
+                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">5.</span><span>In the Headers panel, find Request Headers, then find cookie:</span></li>
+                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">6.</span><span>Right-click the cookie value, click Copy value, then paste below</span></li>
+                            </ol>
+                        </div>
+                    )}
+
+                    <textarea
+                        value={fiverrCookies}
+                        onChange={(e) => setFiverrCookies(e.target.value)}
+                        placeholder="Paste your Fiverr cookie string here… (e.g. _m_init=xxx; u_guid=xxx; ...)"
+                        disabled={scanning}
+                        rows={3}
+                        className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-4 py-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-green-500 transition-all font-mono resize-none"
+                    />
+                    <p className="text-[10px] text-slate-500">
+                        Your cookies are sent directly to Fiverr and are never stored. Without cookies only ~9 publicly visible reviewers are scanned.
+                    </p>
+                </div>
+
+                {/* How it works */}
+                <div className="p-4 rounded-2xl bg-slate-900/50 border border-white/5 text-xs text-slate-400 space-y-1.5">
+                    <p className="font-semibold text-slate-300 mb-1">How it works</p>
+                    <div className="flex items-start space-x-2">
+                        <span className="text-green-400 font-bold mt-0.5">1.</span>
+                        <span>Uses your Fiverr session to fetch reviewer usernames from every page of reviews.</span>
+                    </div>
+                    <div className="flex items-start space-x-2">
+                        <span className="text-green-400 font-bold mt-0.5">2.</span>
+                        <span>Checks each reviewer username against Telegram via your connected account.</span>
+                    </div>
+                    <div className="flex items-start space-x-2">
+                        <span className="text-green-400 font-bold mt-0.5">3.</span>
+                        <span>Highlights users with an active Telegram account in green so you can reach out directly.</span>
+                    </div>
+                </div>
+
+                {/* Scanning progress overlay */}
+                {scanning && (
+                    <div className="flex items-center space-x-3 p-3.5 rounded-xl bg-green-500/10 border border-green-500/20 text-green-400 text-sm">
+                        <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+                        <span>Scanning Fiverr reviews and checking Telegram… This may take a minute depending on the number of reviewers.</span>
+                    </div>
+                )}
+
+                {/* Error */}
+                {error && (
+                    <div className="flex items-center space-x-3 p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+                        <XCircle className="w-4 h-4 flex-shrink-0" />
+                        <span>{error}</span>
+                    </div>
+                )}
+            </div>
+
+            {/* Results Section */}
+            {scanResult && (
+                <div className="space-y-5">
+                    {/* Summary bar */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                        <div className="blue-glass p-4 rounded-2xl border border-white/5 text-center">
+                            <p className="text-2xl font-bold text-white">{scanResult.total_reviewers_scanned}</p>
+                            <p className="text-xs text-slate-400 mt-1">Reviewers Scanned</p>
+                            {scanResult.total_reviews_on_profile > 0 && (
+                                <p className="text-[10px] text-slate-500 mt-0.5">of {scanResult.total_reviews_on_profile} total</p>
+                            )}
+                        </div>
+                        <div className="blue-glass p-4 rounded-2xl border border-green-500/20 text-center">
+                            <p className="text-2xl font-bold text-green-400">{scanResult.active_on_telegram}</p>
+                            <p className="text-xs text-slate-400 mt-1">Active on Telegram</p>
+                        </div>
+                        <div className="blue-glass p-4 rounded-2xl border border-white/5 text-center">
+                            <p className="text-2xl font-bold text-slate-400">{scanResult.not_on_telegram}</p>
+                            <p className="text-xs text-slate-400 mt-1">Not on Telegram</p>
+                        </div>
+                        <div className="blue-glass p-4 rounded-2xl border border-white/5 text-center">
+                            <p className="text-2xl font-bold text-blue-400">{scanResult.scan_duration_seconds}s</p>
+                            <p className="text-xs text-slate-400 mt-1">Scan Duration</p>
+                        </div>
+                    </div>
+
+                    {/* Seller info + scrape error notice */}
+                    <div className="blue-glass px-5 py-3.5 rounded-2xl border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div className="text-sm">
+                            <span className="text-slate-400">Seller: </span>
+                            <a
+                                href={`https://www.fiverr.com/${scanResult.seller_username}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-400 hover:text-blue-300 font-semibold inline-flex items-center space-x-1"
+                            >
+                                <span>@{scanResult.seller_username}</span>
+                                <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                        </div>
+                        {scanResult.active_on_telegram > 0 && (
+                            <button
+                                onClick={copyActiveUsernames}
+                                className="flex items-center space-x-2 px-4 py-2 rounded-xl bg-green-600/20 hover:bg-green-600/30 border border-green-500/30 text-green-400 text-xs font-semibold transition-all active:scale-95"
+                            >
+                                <Copy className="w-3.5 h-3.5" />
+                                <span>Copy Active Telegram Usernames</span>
+                            </button>
+                        )}
+                    </div>
+
+                    {scanResult.error && (
+                        <div className="flex items-center space-x-2 p-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs">
+                            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                            <span>Note: {scanResult.error}</span>
+                        </div>
+                    )}
+
+                    {/* Filter + Search */}
+                    <div className="blue-glass p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row md:items-center gap-3">
+                        {/* Filter chips */}
+                        <div className="flex items-center space-x-2 flex-shrink-0">
+                            {(["all", "active", "inactive"] as const).map((f) => (
+                                <button
+                                    key={f}
+                                    onClick={() => setFilter(f)}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all capitalize ${
+                                        filter === f
+                                            ? f === "active"
+                                                ? "bg-green-600 text-white"
+                                                : f === "inactive"
+                                                ? "bg-slate-600 text-white"
+                                                : "bg-blue-600 text-white"
+                                            : "bg-white/5 hover:bg-white/10 text-slate-400"
+                                    }`}
+                                >
+                                    {f === "all"
+                                        ? `All (${scanResult.total_reviewers_scanned})`
+                                        : f === "active"
+                                        ? `Active on TG (${scanResult.active_on_telegram})`
+                                        : `Not on TG (${scanResult.not_on_telegram})`}
+                                </button>
+                            ))}
+                        </div>
+
+                        {/* Search */}
+                        <div className="relative flex-1">
+                            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                            <input
+                                type="text"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                placeholder="Search by username or name…"
+                                className="w-full bg-slate-900/80 border border-white/10 rounded-xl pl-9 pr-4 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-all"
+                            />
+                        </div>
+                    </div>
+
+                    {/* Results list */}
+                    {filteredResults.length === 0 ? (
+                        <div className="blue-glass p-12 rounded-3xl text-center text-slate-400 border border-white/5">
+                            No results match your current filter.
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                            {filteredResults.map((r) => (
+                                <div
+                                    key={r.fiverr_username}
+                                    className={`p-4 rounded-2xl border transition-all ${
+                                        r.telegram_found
+                                            ? "bg-green-950/30 border-green-500/30 shadow-sm shadow-green-900/20"
+                                            : "bg-slate-900/50 border-white/5"
+                                    }`}
+                                >
+                                    <div className="flex items-center justify-between gap-3">
+                                        {/* Avatar + info */}
+                                        <div className="flex items-center space-x-3 overflow-hidden">
+                                            <div
+                                                className={`w-10 h-10 rounded-xl flex items-center justify-center font-bold text-sm flex-shrink-0 ${
+                                                    r.telegram_found
+                                                        ? "bg-green-500/20 border border-green-500/30 text-green-300"
+                                                        : "bg-white/5 border border-white/10 text-slate-400"
+                                                }`}
+                                            >
+                                                {r.display_name.charAt(0).toUpperCase()}
+                                            </div>
+                                            <div className="overflow-hidden">
+                                                <p className="font-semibold text-sm text-white truncate">
+                                                    {r.display_name}
+                                                </p>
+                                                <p className="text-xs text-slate-500 truncate">
+                                                    Fiverr:{" "}
+                                                    <a
+                                                        href={`https://www.fiverr.com/${r.fiverr_username}`}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="text-blue-400 hover:underline"
+                                                        onClick={(e) => e.stopPropagation()}
+                                                    >
+                                                        @{r.fiverr_username}
+                                                    </a>
+                                                </p>
+                                            </div>
+                                        </div>
+
+                                        {/* Telegram status */}
+                                        <div className="text-right flex-shrink-0">
+                                            {r.telegram_found ? (
+                                                <div className="space-y-0.5">
+                                                    <span className="inline-flex items-center space-x-1 text-[11px] font-bold text-green-400 bg-green-500/10 border border-green-500/20 px-2 py-0.5 rounded-full">
+                                                        <CheckCheck className="w-3 h-3" />
+                                                        <span>Active on Telegram</span>
+                                                    </span>
+                                                    {r.telegram_username && (
+                                                        <p className="text-xs text-green-300 font-mono mt-1">
+                                                            <a
+                                                                href={`https://t.me/${r.telegram_username}`}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="hover:underline flex items-center justify-end space-x-1"
+                                                                onClick={(e) => e.stopPropagation()}
+                                                            >
+                                                                <span>@{r.telegram_username}</span>
+                                                                <ExternalLink className="w-3 h-3" />
+                                                            </a>
+                                                        </p>
+                                                    )}
+                                                    {r.telegram_name && r.telegram_name !== r.telegram_username && (
+                                                        <p className="text-[11px] text-slate-400">{r.telegram_name}</p>
+                                                    )}
+                                                </div>
+                                            ) : (
+                                                <span className="inline-flex items-center space-x-1 text-[11px] text-slate-500 bg-white/5 border border-white/5 px-2 py-0.5 rounded-full">
+                                                    <XCircle className="w-3 h-3" />
+                                                    <span>Not found</span>
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            )}
         </div>
     );
 }

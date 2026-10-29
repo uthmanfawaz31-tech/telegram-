@@ -3075,8 +3075,6 @@ interface FiverrScanResponse {
 
 function FiverrScoutView() {
     const [url, setUrl] = useState("");
-    const [fiverrCookies, setFiverrCookies] = useState("");
-    const [showCookieHelp, setShowCookieHelp] = useState(false);
     const [scanning, setScanning] = useState(false);
     const [scanResult, setScanResult] = useState<FiverrScanResponse | null>(null);
     const [error, setError] = useState("");
@@ -3096,7 +3094,7 @@ function FiverrScoutView() {
             const res = await fetch(`${API_BASE}/fiverr/scan`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ fiverr_url: url.trim(), fiverr_cookies: fiverrCookies.trim() || undefined }),
+                body: JSON.stringify({ fiverr_url: url.trim() }),
             });
             const data = await res.json();
             if (!res.ok) throw new Error(data.detail || "Scan failed");
@@ -3184,48 +3182,6 @@ function FiverrScoutView() {
                             )}
                         </button>
                     </div>
-                </div>
-
-                {/* Fiverr Session Cookies */}
-                <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                        <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                            Fiverr Session Cookies
-                            <span className="ml-2 font-normal text-green-400 normal-case">(required to scan all reviews)</span>
-                        </label>
-                        <button
-                            onClick={() => setShowCookieHelp(!showCookieHelp)}
-                            className="text-xs text-blue-400 hover:text-blue-300 underline"
-                        >
-                            {showCookieHelp ? "Hide instructions" : "How to get cookies?"}
-                        </button>
-                    </div>
-
-                    {showCookieHelp && (
-                        <div className="p-4 rounded-xl bg-blue-950/40 border border-blue-500/20 text-xs text-slate-300 space-y-2">
-                            <p className="font-semibold text-blue-300">Get your Fiverr session cookies:</p>
-                            <ol className="space-y-1.5 list-none">
-                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">1.</span><span>Open fiverr.com in Chrome while logged in</span></li>
-                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">2.</span><span>Press F12 to open DevTools → click the Network tab</span></li>
-                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">3.</span><span>Press F5 to refresh the page</span></li>
-                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">4.</span><span>Click the first request in the list (says www.fiverr.com)</span></li>
-                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">5.</span><span>In the Headers panel, find Request Headers, then find cookie:</span></li>
-                                <li className="flex items-start space-x-2"><span className="text-blue-400 font-bold">6.</span><span>Right-click the cookie value, click Copy value, then paste below</span></li>
-                            </ol>
-                        </div>
-                    )}
-
-                    <textarea
-                        value={fiverrCookies}
-                        onChange={(e) => setFiverrCookies(e.target.value)}
-                        placeholder="Paste your Fiverr cookie string here… (e.g. _m_init=xxx; u_guid=xxx; ...)"
-                        disabled={scanning}
-                        rows={3}
-                        className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-4 py-3 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-green-500 transition-all font-mono resize-none"
-                    />
-                    <p className="text-[10px] text-slate-500">
-                        Your cookies are sent directly to Fiverr and are never stored. Without cookies only ~9 publicly visible reviewers are scanned.
-                    </p>
                 </div>
 
                 {/* How it works */}

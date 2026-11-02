@@ -4078,5 +4078,3 @@ function IPTVScoutView() {
         </div>
     );
 }
-    );
-}

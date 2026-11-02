@@ -42,7 +42,9 @@ import {
     Loader2,
     Tv,
     Download,
-    MessageSquare
+    MessageSquare,
+    Globe,
+    Languages
 } from "lucide-react";
 import Background from "@/components/Background";
 import FadeIn from "@/components/FadeIn";
@@ -3435,6 +3437,9 @@ interface MessageLead {
     date_str: string;
     date_iso: string;
     message_text: string;
+    translated_text?: string | null;
+    detected_language?: string | null;
+    is_translated: boolean;
     is_iptv_related: boolean;
     relevance_score: "High" | "Medium" | "General" | "None";
     intent_category?: string | null;
@@ -3459,6 +3464,7 @@ function IPTVScoutView() {
     const [groupLink, setGroupLink] = useState("");
     const [limit, setLimit] = useState(200);
     const [filterIptvOnly, setFilterIptvOnly] = useState(true);
+    const [autoTranslate, setAutoTranslate] = useState(true);
     const [customKeywords, setCustomKeywords] = useState("");
     const [scanning, setScanning] = useState(false);
     const [scanResult, setScanResult] = useState<IPTVScoutResponse | null>(null);
@@ -3466,6 +3472,11 @@ function IPTVScoutView() {
     const [categoryFilter, setCategoryFilter] = useState<string>("all");
     const [searchQuery, setSearchQuery] = useState("");
     const [copyNotice, setCopyNotice] = useState("");
+    const [showOriginalMap, setShowOriginalMap] = useState<Record<number, boolean>>({});
+
+    const toggleOriginal = (msgId: number) => {
+        setShowOriginalMap((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
+    };
 
     const showCopyFeedback = (msg: string) => {
         setCopyNotice(msg);
@@ -3490,6 +3501,7 @@ function IPTVScoutView() {
                     limit: Number(limit) || 200,
                     filter_iptv_only: filterIptvOnly,
                     custom_keywords: customKeywords.trim() || null,
+                    auto_translate: autoTranslate,
                 }),
             });
             const data = await res.json();
@@ -3510,6 +3522,7 @@ function IPTVScoutView() {
             if (categoryFilter === "trial" && !lead.intent_category?.toLowerCase().includes("trial")) return false;
             if (categoryFilter === "setup" && !lead.intent_category?.toLowerCase().includes("setup")) return false;
             if (categoryFilter === "tech" && !lead.intent_category?.toLowerCase().includes("tech") && !lead.intent_category?.toLowerCase().includes("channels")) return false;
+            if (categoryFilter === "translated" && !lead.is_translated) return false;
 
             // Search query
             if (searchQuery.trim()) {
@@ -3519,6 +3532,8 @@ function IPTVScoutView() {
                     (lead.username || "").toLowerCase().includes(q) ||
                     lead.display_name.toLowerCase().includes(q) ||
                     lead.message_text.toLowerCase().includes(q) ||
+                    (lead.translated_text || "").toLowerCase().includes(q) ||
+                    (lead.detected_language || "").toLowerCase().includes(q) ||
                     (lead.intent_category || "").toLowerCase().includes(q) ||
                     matchedInKeywords
                 );
@@ -3560,17 +3575,31 @@ function IPTVScoutView() {
 
     const exportToCSV = () => {
         if (!scanResult || scanResult.leads.length === 0) return;
-        const headers = ["Message ID", "Username", "Display Name", "User ID", "Date & Time (UTC)", "Relevance", "Intent Category", "Matched Keywords", "Message Content"];
+        const headers = [
+            "Message ID",
+            "Username",
+            "Display Name",
+            "User ID",
+            "Date & Time (UTC)",
+            "Language",
+            "English Translation",
+            "Original Message",
+            "Relevance",
+            "Intent Category",
+            "Matched Keywords",
+        ];
         const rows = scanResult.leads.map((l) => [
             l.message_id,
             l.username ? `@${l.username}` : "",
             `"${(l.display_name || "").replace(/"/g, '""')}"`,
             l.sender_id || "",
             l.date_str,
+            l.detected_language || "English",
+            `"${(l.translated_text || l.message_text || "").replace(/"/g, '""')}"`,
+            `"${(l.message_text || "").replace(/"/g, '""')}"`,
             l.relevance_score,
             `"${(l.intent_category || "").replace(/"/g, '""')}"`,
             `"${(l.matched_keywords || []).join(", ").replace(/"/g, '""')}"`,
-            `"${(l.message_text || "").replace(/"/g, '""')}"`,
         ]);
 
         const csvContent = "\uFEFF" + [headers.join(","), ...rows.map((r) => r.join(","))].join("\r\n");
@@ -3583,7 +3612,7 @@ function IPTVScoutView() {
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        showCopyFeedback("Exported CSV spreadsheet!");
+        showCopyFeedback("Exported CSV spreadsheet with translations!");
     };
 
     return (
@@ -3603,9 +3632,9 @@ function IPTVScoutView() {
                         <Tv className="w-5 h-5" />
                     </div>
                     <div>
-                        <h3 className="font-bold text-white text-base">Telegram IPTV Scout & Lead Extractor</h3>
+                        <h3 className="font-bold text-white text-base">Telegram IPTV Scout & Multilingual Lead Extractor</h3>
                         <p className="text-xs text-slate-400">
-                            Enter any Telegram group link to extract usernames, timestamps, message logs, and detect prospective clients asking for IPTV, trials, setups, or subscriptions.
+                            Enter any Telegram group link to extract usernames, timestamps, and message logs. Automatically translates foreign languages (Spanish, French, Arabic, German, etc.) to English and accurately flags IPTV buyer leads.
                         </p>
                     </div>
                 </div>
@@ -3634,7 +3663,7 @@ function IPTVScoutView() {
                                 {scanning ? (
                                     <>
                                         <Loader2 className="w-4 h-4 animate-spin" />
-                                        <span>Scouting Group…</span>
+                                        <span>Scouting & Translating…</span>
                                     </>
                                 ) : (
                                     <>
@@ -3647,7 +3676,7 @@ function IPTVScoutView() {
                     </div>
 
                     {/* Secondary Filters */}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+                    <div className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-1">
                         <div>
                             <label className="text-[11px] font-semibold text-slate-400 mb-1.5 block">
                                 Scan Depth (Messages)
@@ -3668,7 +3697,7 @@ function IPTVScoutView() {
 
                         <div>
                             <label className="text-[11px] font-semibold text-slate-400 mb-1.5 block">
-                                Custom Keywords (Optional, comma-separated)
+                                Custom Keywords (Optional)
                             </label>
                             <input
                                 type="text"
@@ -3680,8 +3709,8 @@ function IPTVScoutView() {
                             />
                         </div>
 
-                        <div className="flex items-end pb-1">
-                            <label className="flex items-center space-x-2.5 cursor-pointer text-xs text-slate-300">
+                        <div className="flex items-end pb-2">
+                            <label className="flex items-center space-x-2 cursor-pointer text-xs text-slate-300">
                                 <input
                                     type="checkbox"
                                     checked={filterIptvOnly}
@@ -3689,7 +3718,23 @@ function IPTVScoutView() {
                                     disabled={scanning}
                                     className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
                                 />
-                                <span>Filter IPTV inquiries only (hide chat noise)</span>
+                                <span>Filter IPTV inquiries only</span>
+                            </label>
+                        </div>
+
+                        <div className="flex items-end pb-2">
+                            <label className="flex items-center space-x-2 cursor-pointer text-xs text-sky-300 font-semibold">
+                                <input
+                                    type="checkbox"
+                                    checked={autoTranslate}
+                                    onChange={(e) => setAutoTranslate(e.target.checked)}
+                                    disabled={scanning}
+                                    className="w-4 h-4 accent-sky-500 rounded cursor-pointer"
+                                />
+                                <span className="flex items-center space-x-1">
+                                    <Globe className="w-3.5 h-3.5" />
+                                    <span>Auto-translate to English</span>
+                                </span>
                             </label>
                         </div>
                     </div>
@@ -3699,20 +3744,20 @@ function IPTVScoutView() {
                 <div className="p-4 rounded-2xl bg-slate-900/50 border border-white/5 text-xs text-slate-400 space-y-1.5">
                     <p className="font-semibold text-slate-300 mb-1 flex items-center space-x-1.5">
                         <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
-                        <span>Intelligent Lead Detection</span>
+                        <span>Real-Time Scouting & Automatic Translation</span>
                     </p>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-1 text-[11px]">
                         <div className="flex items-start space-x-2">
                             <span className="text-emerald-400 font-bold">1.</span>
-                            <span>Resolves public @group or private t.me/+ invite links and connects using your Telegram session.</span>
+                            <span>Resolves public @group or private invite links via your connected MTProto account session.</span>
                         </div>
                         <div className="flex items-start space-x-2">
-                            <span className="text-emerald-400 font-bold">2.</span>
-                            <span>Retrieves message history with exact usernames, display names, and UTC date/time stamps.</span>
+                            <span className="text-sky-400 font-bold">2.</span>
+                            <span>Detects foreign messages (Spanish, French, Arabic, etc.) and accurately translates them to English.</span>
                         </div>
                         <div className="flex items-start space-x-2">
                             <span className="text-emerald-400 font-bold">3.</span>
-                            <span>Identifies buyer intent (seeking providers, requesting trials, app setups, M3U/Xtream inquiries).</span>
+                            <span>Categorizes intent (Buyers, Free Trial seekers, TiviMate/Firestick users) with exact timestamps and usernames.</span>
                         </div>
                     </div>
                 </div>
@@ -3721,7 +3766,7 @@ function IPTVScoutView() {
                 {scanning && (
                     <div className="flex items-center space-x-3 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm">
                         <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
-                        <span>Connecting to Telegram group and scouting messages… This may take a few seconds.</span>
+                        <span>Connecting to Telegram group, fetching messages, and translating foreign languages… This takes a few seconds.</span>
                     </div>
                 )}
 
@@ -3817,6 +3862,7 @@ function IPTVScoutView() {
                                 { id: "trial", label: "Trials" },
                                 { id: "setup", label: "App & Setups" },
                                 { id: "tech", label: "Channels / Tech" },
+                                { id: "translated", label: "Translated" },
                             ].map((f) => (
                                 <button
                                     key={f.id}
@@ -3838,7 +3884,7 @@ function IPTVScoutView() {
                                 type="text"
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
-                                placeholder="Search leads by username, keyword, or message text…"
+                                placeholder="Search leads by username, keyword, language, or translated text…"
                                 className="w-full bg-slate-900/80 border border-white/10 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-all"
                             />
                         </div>
@@ -3912,6 +3958,13 @@ function IPTVScoutView() {
 
                                             {/* Timestamp & Intent Badge */}
                                             <div className="flex items-center space-x-2 flex-wrap sm:flex-nowrap">
+                                                {lead.is_translated && lead.detected_language && (
+                                                    <span className="inline-flex items-center space-x-1 text-[10px] font-bold text-sky-300 bg-sky-500/10 border border-sky-500/20 px-2 py-0.5 rounded-md">
+                                                        <Globe className="w-2.5 h-2.5" />
+                                                        <span>{lead.detected_language}</span>
+                                                    </span>
+                                                )}
+
                                                 <span className="inline-flex items-center space-x-1 text-[11px] text-slate-400 bg-white/5 px-2.5 py-1 rounded-lg font-mono">
                                                     <Clock className="w-3 h-3 text-slate-500" />
                                                     <span>{lead.date_str}</span>
@@ -3925,11 +3978,45 @@ function IPTVScoutView() {
                                             </div>
                                         </div>
 
-                                        {/* Card Body: Message Text */}
-                                        <div className="mt-3">
-                                            <p className="text-sm text-slate-200 leading-relaxed bg-black/30 p-3 rounded-xl border border-white/5 font-sans whitespace-pre-wrap">
-                                                {lead.message_text}
-                                            </p>
+                                        {/* Card Body: Message & English Translation */}
+                                        <div className="mt-3 space-y-2">
+                                            {lead.is_translated && lead.translated_text ? (
+                                                <div className="space-y-2">
+                                                    {/* Translation Highlight */}
+                                                    <div className="bg-sky-950/30 border border-sky-500/30 p-3 rounded-xl">
+                                                        <div className="flex items-center space-x-1 text-[11px] font-bold text-sky-400 mb-1">
+                                                            <Languages className="w-3.5 h-3.5" />
+                                                            <span>English Translation:</span>
+                                                        </div>
+                                                        <p className="text-sm text-slate-100 font-medium leading-relaxed">
+                                                            {lead.translated_text}
+                                                        </p>
+                                                    </div>
+
+                                                    {/* Original text toggle */}
+                                                    <div className="pt-0.5">
+                                                        <button
+                                                            onClick={() => toggleOriginal(lead.message_id)}
+                                                            className="text-[11px] text-slate-400 hover:text-slate-200 underline font-medium flex items-center space-x-1"
+                                                        >
+                                                            <span>
+                                                                {showOriginalMap[lead.message_id]
+                                                                    ? `Hide Original (${lead.detected_language || "Native"})`
+                                                                    : `Show Original (${lead.detected_language || "Native"})`}
+                                                            </span>
+                                                        </button>
+                                                        {showOriginalMap[lead.message_id] && (
+                                                            <p className="mt-1 text-xs text-slate-400 bg-black/40 p-2.5 rounded-lg border border-white/5 font-mono italic">
+                                                                {lead.message_text}
+                                                            </p>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            ) : (
+                                                <p className="text-sm text-slate-200 leading-relaxed bg-black/30 p-3 rounded-xl border border-white/5 font-sans whitespace-pre-wrap">
+                                                    {lead.message_text}
+                                                </p>
+                                            )}
                                         </div>
 
                                         {/* Card Footer: Keywords and Actions */}
@@ -3967,7 +4054,13 @@ function IPTVScoutView() {
                                                     </button>
                                                 )}
                                                 <button
-                                                    onClick={() => copyMessageText(lead.message_text)}
+                                                    onClick={() =>
+                                                        copyMessageText(
+                                                            lead.translated_text
+                                                                ? `${lead.translated_text} (Original: ${lead.message_text})`
+                                                                : lead.message_text
+                                                        )
+                                                    }
                                                     className="text-xs px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 font-medium flex items-center space-x-1"
                                                 >
                                                     <FileText className="w-3 h-3" />
@@ -3983,5 +4076,7 @@ function IPTVScoutView() {
                 </div>
             )}
         </div>
+    );
+}
     );
 }

@@ -1,10 +1,10 @@
 """
-iptv_scout.py – Telegram Group Scout for IPTV Leads & Inquiries.
+iptv_scout.py – Telegram Group Scout for IPTV Leads & Inquiries with Auto-Translation.
 
 Scans any Telegram group (by invite link or public username),
 retrieves message history, extracts usernames, dates, timestamps,
-message content, and detects users expressing interest in IPTV,
-subscriptions, free trials, M3U/Xtream formats, players (TiviMate, Smarters), etc.
+message content, detects non-English languages, translates them
+automatically to English, and categorizes prospective IPTV buyers/leads.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -38,26 +39,85 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
-# IPTV Keyword & Intent Patterns
+# Language Mapping
+# ---------------------------------------------------------------------------
+
+LANG_MAP = {
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "ar": "Arabic",
+    "ru": "Russian",
+    "tr": "Turkish",
+    "nl": "Dutch",
+    "pl": "Polish",
+    "el": "Greek",
+    "sv": "Swedish",
+    "ro": "Romanian",
+    "hi": "Hindi",
+    "fa": "Persian",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "uk": "Ukrainian",
+    "id": "Indonesian",
+    "vi": "Vietnamese",
+    "cs": "Czech",
+    "da": "Danish",
+    "fi": "Finnish",
+    "no": "Norwegian",
+    "he": "Hebrew",
+}
+
+# ---------------------------------------------------------------------------
+# Multilingual IPTV Keyword & Intent Patterns
 # ---------------------------------------------------------------------------
 
 IPTV_RULES = [
-    # High Intent: Buying / Requesting Provider / Subscriptions
+    # High Intent: Buying / Requesting Provider / Subscriptions (English + Multilingual)
     (
         re.compile(
+            # English
             r"\b(need|want|looking\s+for|search(?:ing)?\s+for|recommend(?:ation)?|best|good|reliable|cheap|any|who\s+sells?|selling)\b.*?\b(iptv|m3u|provider|subscription|sub)\b|"
             r"\b(iptv|sub|subscription)\b.*?\b(provider|recommendation|dm\s+me|pm\s+me|cost|price|buy|seller|reliable|good)\b|"
             r"\b(anyone\s+(?:got|have|sell)\s+(?:a\s+)?(?:good\s+)?iptv)\b|"
-            r"\b(i\s+need\s+iptv)\b",
+            r"\b(i\s+need\s+iptv)\b|"
+            # Spanish: busco iptv, necesito iptv, quien vende iptv
+            r"\b(busco|necesito|quiero|recomiendan?|quien\s+vende|alguien\s+tiene)\b.*?\b(iptv|m3u|servidor|servicio|proveedor|cuenta)\b|"
+            # French: cherche iptv, besoin iptv, abonnement iptv
+            r"\b(cherche|besoin|recherche|qui\s+vend|quelqu['\s]un\s+a)\b.*?\b(iptv|m3u|abonnement|fournisseur|serveur)\b|"
+            # Italian: cerco iptv, serve iptv, abbonamento iptv
+            r"\b(cerco|serve|chi\s+vende|qualcuno\s+ha)\b.*?\b(iptv|m3u|abbonamento|fornitore|server)\b|"
+            # German: suche iptv, brauche iptv, wer hat iptv
+            r"\b(suche|brauche|wer\s+hat|wer\s+verkauft)\b.*?\b(iptv|m3u|anbieter|abo|linie)\b|"
+            # Portuguese: procuro iptv, preciso iptv, quem vende
+            r"\b(procuro|preciso|quero|quem\s+vende|alguem\s+tem)\b.*?\b(iptv|m3u|servidor|lista|plano)\b|"
+            # Arabic
+            r"(ابحث\s+عن|اريد|محتاج|مين\s+عنده|بدي|افضل|عايز)\s+.*?(iptv|اشتراك|سيرفر|قنوات)",
             re.IGNORECASE,
         ),
         "High",
         "Seeking IPTV Provider / Subscription",
     ),
-    # High Intent: Requesting Trials
+    # High Intent: Requesting Trials (Multilingual)
     (
         re.compile(
-            r"\b(free\s+trial|iptv\s+trial|test\s+line|trial\s+line|test\s+link|trial\s+link|test\s+account|24h\s+trial|need\s+a\s+trial|trial\s+please|free\s+test|trial\s+code|give\s+me\s+trial)\b",
+            # English
+            r"\b(free\s+trial|iptv\s+trial|test\s+line|trial\s+line|test\s+link|trial\s+link|test\s+account|24h\s+trial|need\s+a\s+trial|trial\s+please|free\s+test|trial\s+code|give\s+me\s+trial)\b|"
+            # Spanish: prueba gratis, demo iptv, test 24h
+            r"\b(prueba\s+gratis|demo\s+iptv|prueba\s+de\s+iptv|test\s+24h|cuenta\s+demo)\b|"
+            # French: test gratuit, essai gratuit, test 24h
+            r"\b(test\s+gratuit|essai\s+gratuit|test\s+24h|essai\s+iptv)\b|"
+            # Italian: prova gratis, test gratuito
+            r"\b(prova\s+gratis|test\s+gratuito|prova\s+iptv)\b|"
+            # German: test linie, probeabo, kostenlos testen
+            r"\b(testlinie|kostenlos\s+testen|probe\s+iptv)\b|"
+            # Portuguese: teste gratis, teste de 24h
+            r"\b(teste\s+gratis|teste\s+gratuito|teste\s+iptv)\b|"
+            # Arabic
+            r"(تجربة|تست|تجريبي|طلب\s+تجربة)\s+.*?(iptv|اشتراك|سيرفر)",
             re.IGNORECASE,
         ),
         "High",
@@ -124,6 +184,57 @@ def _analyze_iptv_intent(text: str) -> Tuple[bool, str, Optional[str], List[str]
     return is_related, top_score, top_category, matched_keywords
 
 
+async def _translate_to_english(
+    text: str, client: httpx.AsyncClient
+) -> Tuple[Optional[str], Optional[str], bool]:
+    """
+    Detects language and translates to English if non-English.
+    Returns: (translated_english_text, detected_language_name, is_translated)
+    """
+    if not text or not text.strip():
+        return None, None, False
+
+    try:
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {
+            "client": "gtx",
+            "sl": "auto",
+            "tl": "en",
+            "dt": "t",
+            "q": text[:1500],
+        }
+        res = await client.get(url, params=params, timeout=4.0)
+        if res.status_code == 200:
+            data = res.json()
+            detected_code = (
+                data[2]
+                if len(data) > 2 and isinstance(data[2], str)
+                else "auto"
+            )
+            detected_code_clean = detected_code.lower().split("-")[0]
+
+            translated_parts = []
+            if data and isinstance(data[0], list):
+                for part in data[0]:
+                    if part and isinstance(part, list) and len(part) > 0 and part[0]:
+                        translated_parts.append(part[0])
+            translated_text = "".join(translated_parts).strip()
+
+            if (
+                detected_code_clean != "en"
+                and translated_text
+                and translated_text.lower() != text.strip().lower()
+            ):
+                lang_name = LANG_MAP.get(detected_code_clean, detected_code.upper())
+                return translated_text, lang_name, True
+            elif detected_code_clean == "en":
+                return None, "English", False
+    except Exception as e:
+        logger.debug(f"Translation note: {e}")
+
+    return None, None, False
+
+
 # ---------------------------------------------------------------------------
 # Schemas
 # ---------------------------------------------------------------------------
@@ -134,6 +245,7 @@ class IPTVScoutRequest(BaseModel):
     limit: Optional[int] = Field(200, ge=10, le=1000)
     filter_iptv_only: Optional[bool] = True
     custom_keywords: Optional[str] = None
+    auto_translate: Optional[bool] = True
 
 
 class MessageLead(BaseModel):
@@ -145,6 +257,9 @@ class MessageLead(BaseModel):
     date_str: str
     date_iso: str
     message_text: str
+    translated_text: Optional[str] = None
+    detected_language: Optional[str] = None
+    is_translated: bool = False
     is_iptv_related: bool
     relevance_score: str  # "High", "Medium", "General", "None"
     intent_category: Optional[str] = None
@@ -177,7 +292,8 @@ async def scan_telegram_group(
 ) -> IPTVScoutResponse:
     """
     Scout a Telegram group or supergroup for IPTV leads.
-    Extracts usernames, timestamps, full message text, and categorizes intent.
+    Extracts usernames, timestamps, full message text, auto-translates non-English messages,
+    and accurately categorizes buyer intent.
     """
     start_time = time.monotonic()
     raw_link = payload.group_link.strip()
@@ -232,12 +348,10 @@ async def scan_telegram_group(
                 if isinstance(invite_res, ChatInviteAlready):
                     target_entity = invite_res.chat
                 elif isinstance(invite_res, ChatInvite):
-                    # Join group
                     import_res = await client(ImportChatInviteRequest(hash_part))
                     if hasattr(import_res, "chats") and import_res.chats:
                         target_entity = import_res.chats[0]
             except errors.UserAlreadyParticipantError:
-                # Already a member, resolve from dialogs
                 dialogs = await client.get_dialogs()
                 for d in dialogs:
                     if d.is_group or d.is_channel:
@@ -245,7 +359,6 @@ async def scan_telegram_group(
                         break
             except Exception as e:
                 logger.warning(f"Invite check/import note: {e}")
-                # Try import directly if check didn't resolve
                 try:
                     import_res = await client(ImportChatInviteRequest(hash_part))
                     if hasattr(import_res, "chats") and import_res.chats:
@@ -256,7 +369,6 @@ async def scan_telegram_group(
                     error_msg = f"Invite link notice: {ex2}"
 
             if not target_entity:
-                # Fallback to direct get_entity with link
                 try:
                     target_entity = await client.get_entity(raw_link)
                 except Exception as ex3:
@@ -265,7 +377,6 @@ async def scan_telegram_group(
                         detail=f"Could not join or resolve Telegram invite link: {ex3}",
                     )
         else:
-            # Public username or standard link
             clean_name = (
                 raw_link.replace("https://t.me/", "")
                 .replace("http://t.me/", "")
@@ -282,7 +393,6 @@ async def scan_telegram_group(
                     detail=f"Could not resolve Telegram entity '@{clean_name}': {str(e)}",
                 )
 
-            # Join channel/group if not participant
             try:
                 await client(JoinChannelRequest(target_entity))
             except errors.UserAlreadyParticipantError:
@@ -310,93 +420,122 @@ async def scan_telegram_group(
             else []
         )
 
-        for msg in messages:
-            msg_text = msg.text or msg.message or ""
-            if not msg_text.strip():
-                continue
+        async with httpx.AsyncClient() as http_client:
+            for msg in messages:
+                msg_text = msg.text or msg.message or ""
+                if not msg_text.strip():
+                    continue
 
-            # Sender lookup (cached for speed)
-            sender_id_str = str(msg.sender_id) if msg.sender_id else ""
-            if sender_id_str and sender_id_str in sender_cache:
-                s_info = sender_cache[sender_id_str]
-            else:
-                s_info = {
-                    "username": None,
-                    "display_name": "Anonymous / Unknown",
-                    "is_bot": False,
-                }
-                try:
-                    sender = await msg.get_sender()
-                    if sender:
-                        if isinstance(sender, User):
-                            uname = getattr(sender, "username", None)
-                            first = getattr(sender, "first_name", "") or ""
-                            last = getattr(sender, "last_name", "") or ""
-                            dname = f"{first} {last}".strip() or uname or f"User {sender.id}"
-                            s_info = {
-                                "username": uname,
-                                "display_name": dname,
-                                "is_bot": bool(getattr(sender, "bot", False)),
-                            }
-                        elif isinstance(sender, Channel) or isinstance(sender, Chat):
-                            s_info = {
-                                "username": getattr(sender, "username", None),
-                                "display_name": getattr(sender, "title", "Channel"),
-                                "is_bot": False,
-                            }
-                except Exception as e:
-                    logger.debug(f"Sender lookup note: {e}")
+                # Sender lookup (cached for speed)
+                sender_id_str = str(msg.sender_id) if msg.sender_id else ""
+                if sender_id_str and sender_id_str in sender_cache:
+                    s_info = sender_cache[sender_id_str]
+                else:
+                    s_info = {
+                        "username": None,
+                        "display_name": "Anonymous / Unknown",
+                        "is_bot": False,
+                    }
+                    try:
+                        sender = await msg.get_sender()
+                        if sender:
+                            if isinstance(sender, User):
+                                uname = getattr(sender, "username", None)
+                                first = getattr(sender, "first_name", "") or ""
+                                last = getattr(sender, "last_name", "") or ""
+                                dname = f"{first} {last}".strip() or uname or f"User {sender.id}"
+                                s_info = {
+                                    "username": uname,
+                                    "display_name": dname,
+                                    "is_bot": bool(getattr(sender, "bot", False)),
+                                }
+                            elif isinstance(sender, Channel) or isinstance(sender, Chat):
+                                s_info = {
+                                    "username": getattr(sender, "username", None),
+                                    "display_name": getattr(sender, "title", "Channel"),
+                                    "is_bot": False,
+                                }
+                    except Exception as e:
+                        logger.debug(f"Sender lookup note: {e}")
 
-                if sender_id_str:
-                    sender_cache[sender_id_str] = s_info
+                    if sender_id_str:
+                        sender_cache[sender_id_str] = s_info
 
-            # Intent & IPTV analysis
-            is_related, score, category, matched_kws = _analyze_iptv_intent(msg_text)
+                # Auto-Translation
+                translated_text = None
+                detected_lang = None
+                is_trans = False
 
-            # Check custom keywords
-            if custom_kw_list:
-                msg_lower = msg_text.lower()
-                for ckw in custom_kw_list:
-                    if ckw in msg_lower and ckw not in [k.lower() for k in matched_kws]:
-                        matched_kws.append(ckw)
+                if payload.auto_translate:
+                    translated_text, detected_lang, is_trans = await _translate_to_english(
+                        msg_text, http_client
+                    )
+
+                # Intent & IPTV analysis on both original and translated text
+                is_related, score, category, matched_kws = _analyze_iptv_intent(msg_text)
+
+                if is_trans and translated_text:
+                    t_related, t_score, t_category, t_kws = _analyze_iptv_intent(translated_text)
+                    if t_related:
                         is_related = True
-                        if score == "None":
-                            score = "Medium"
-                            category = f"Custom Match: '{ckw}'"
+                        score_rank = {"High": 3, "Medium": 2, "General": 1, "None": 0}
+                        if score_rank[t_score] > score_rank[score]:
+                            score = t_score
+                            category = t_category
+                        for tk in t_kws:
+                            if tk.lower() not in [k.lower() for k in matched_kws]:
+                                matched_kws.append(tk)
 
-            # Filter if requested
-            if payload.filter_iptv_only and not is_related:
-                continue
+                # Check custom keywords
+                if custom_kw_list:
+                    texts_to_check = [msg_text.lower()]
+                    if translated_text:
+                        texts_to_check.append(translated_text.lower())
+                    for text_version in texts_to_check:
+                        for ckw in custom_kw_list:
+                            if ckw in text_version and ckw not in [k.lower() for k in matched_kws]:
+                                matched_kws.append(ckw)
+                                is_related = True
+                                if score == "None":
+                                    score = "Medium"
+                                    category = f"Custom Match: '{ckw}'"
 
-            if score == "High":
-                high_intent_count += 1
+                # Filter if requested
+                if payload.filter_iptv_only and not is_related:
+                    continue
 
-            if s_info["username"]:
-                unique_users.add(s_info["username"].lower())
-            elif sender_id_str:
-                unique_users.add(sender_id_str)
+                if score == "High":
+                    high_intent_count += 1
 
-            # Format timestamp
-            date_obj = msg.date
-            date_str = date_obj.strftime("%Y-%m-%d %H:%M:%S UTC")
-            date_iso = date_obj.isoformat()
+                if s_info["username"]:
+                    unique_users.add(s_info["username"].lower())
+                elif sender_id_str:
+                    unique_users.add(sender_id_str)
 
-            leads.append(
-                MessageLead(
-                    message_id=msg.id,
-                    sender_id=sender_id_str or None,
-                    username=s_info["username"],
-                    display_name=s_info["display_name"],
-                    is_bot=s_info["is_bot"],
-                    date_str=date_str,
-                    date_iso=date_iso,
-                    message_text=msg_text.strip(),
-                    is_iptv_related=is_related,
-                    relevance_score=score,
-                    intent_category=category,
-                    matched_keywords=matched_kws,
+                # Format timestamp
+                date_obj = msg.date
+                date_str = date_obj.strftime("%Y-%m-%d %H:%M:%S UTC")
+                date_iso = date_obj.isoformat()
+
+                leads.append(
+                    MessageLead(
+                        message_id=msg.id,
+                        sender_id=sender_id_str or None,
+                        username=s_info["username"],
+                        display_name=s_info["display_name"],
+                        is_bot=s_info["is_bot"],
+                        date_str=date_str,
+                        date_iso=date_iso,
+                        message_text=msg_text.strip(),
+                        translated_text=translated_text if is_trans else None,
+                        detected_language=detected_lang,
+                        is_translated=is_trans,
+                        is_iptv_related=is_related,
+                        relevance_score=score,
+                        intent_category=category,
+                        matched_keywords=matched_kws,
+                    )
                 )
-            )
 
         duration = round(time.monotonic() - start_time, 2)
 

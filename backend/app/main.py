@@ -67,7 +67,7 @@ def version():
 
     return {
         "status": "online",
-        "version": "v4-bulletproof-delivery",
+        "version": "v5-iptv-scout-live",
         "has_media": True,
         "has_pillow": has_pil
     }

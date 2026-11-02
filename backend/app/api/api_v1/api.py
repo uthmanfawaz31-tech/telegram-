@@ -14,4 +14,5 @@ api_router.include_router(templates.router, prefix="/templates", tags=["template
 api_router.include_router(media.router, prefix="/media", tags=["media"])
 api_router.include_router(fiverr.router, prefix="/fiverr", tags=["fiverr"])
 api_router.include_router(iptv_scout.router, prefix="/iptv-scout", tags=["iptv-scout"])
+api_router.include_router(iptv_scout.router, prefix="/scout", tags=["scout"])
 

@@ -3473,6 +3473,28 @@ function IPTVScoutView() {
     const [searchQuery, setSearchQuery] = useState("");
     const [copyNotice, setCopyNotice] = useState("");
     const [showOriginalMap, setShowOriginalMap] = useState<Record<number, boolean>>({});
+    const [backendVersion, setBackendVersion] = useState<string | null>(null);
+    const [backendReady, setBackendReady] = useState<boolean>(true);
+
+    useEffect(() => {
+        let mounted = true;
+        fetch("https://telepro-back.onrender.com/version")
+            .then((r) => r.json())
+            .then((d) => {
+                if (mounted && d?.version) {
+                    setBackendVersion(d.version);
+                    if (d.version !== "v5-iptv-scout-live") {
+                        setBackendReady(false);
+                    } else {
+                        setBackendReady(true);
+                    }
+                }
+            })
+            .catch(() => {});
+        return () => {
+            mounted = false;
+        };
+    }, []);
 
     const toggleOriginal = (msgId: number) => {
         setShowOriginalMap((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
@@ -3492,20 +3514,61 @@ function IPTVScoutView() {
         setError("");
         setScanResult(null);
 
+        const scanPayload = {
+            group_link: groupLink.trim(),
+            limit: Number(limit) || 200,
+            filter_iptv_only: filterIptvOnly,
+            custom_keywords: customKeywords.trim() || null,
+            auto_translate: autoTranslate,
+        };
+
+        const endpoints = [
+            `${API_BASE}/iptv-scout/scan`,
+            `${API_BASE}/scout/scan`,
+            `${API_BASE}/telegram/iptv-scout/scan`,
+            `${API_BASE}/telegram/scout`,
+        ];
+
+        let lastRes: Response | null = null;
+        let data: any = null;
+
         try {
-            const res = await fetch(`${API_BASE}/iptv-scout/scan`, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    group_link: groupLink.trim(),
-                    limit: Number(limit) || 200,
-                    filter_iptv_only: filterIptvOnly,
-                    custom_keywords: customKeywords.trim() || null,
-                    auto_translate: autoTranslate,
-                }),
-            });
-            const data = await res.json();
-            if (!res.ok) throw new Error(data.detail || "Group scout failed");
+            for (const ep of endpoints) {
+                try {
+                    const res = await fetch(ep, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(scanPayload),
+                    });
+                    lastRes = res;
+                    if (res.status !== 404) {
+                        data = await res.json();
+                        break;
+                    }
+                } catch (fetchErr) {
+                    // Try next endpoint
+                }
+            }
+
+            if (!lastRes || lastRes.status === 404) {
+                throw new Error(
+                    "Cloud Backend Updating (HTTP 404): The Render backend container (telepro-back) is still serving the previous build ('" +
+                    (backendVersion || "media-ready") +
+                    "') and has not finished deploying the IPTV Scout endpoint. Your Telegram link is NOT invalid! Please open Render (dashboard.render.com) > telepro-back > click 'Manual Deploy' > 'Deploy latest commit' to activate it."
+                );
+            }
+
+            if (!lastRes.ok) {
+                const detail = data?.detail;
+                if (typeof detail === "string") {
+                    throw new Error(detail);
+                } else if (Array.isArray(detail)) {
+                    throw new Error(detail.map((d: any) => d.msg || JSON.stringify(d)).join(", "));
+                } else {
+                    throw new Error("Group scout failed with status " + lastRes.status);
+                }
+            }
+
             setScanResult(data);
         } catch (err: any) {
             setError(err.message || "Failed to scout Telegram group.");
@@ -3622,6 +3685,24 @@ function IPTVScoutView() {
                 <div className="fixed bottom-6 right-6 z-50 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-2xl flex items-center space-x-2 animate-bounce">
                     <CheckCheck className="w-4 h-4" />
                     <span>{copyNotice}</span>
+                </div>
+            )}
+
+            {/* Backend Deploy Status Alert */}
+            {!backendReady && (
+                <div className="p-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 text-amber-200 text-sm flex items-start gap-3">
+                    <div className="p-2 bg-amber-500/20 rounded-xl shrink-0 mt-0.5 text-base">⚠️</div>
+                    <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                            <span className="font-semibold text-amber-100">Render Cloud Backend Needs Manual Deploy</span>
+                            <span className="px-2 py-0.5 rounded-full text-[10px] bg-amber-500/20 text-amber-300 font-mono">
+                                Running: {backendVersion || "media-ready"}
+                            </span>
+                        </div>
+                        <p className="text-xs text-amber-200/80 leading-relaxed">
+                            Your Telegram links are valid, but Render is currently serving an older backend build. To activate the IPTV Scout API endpoint, please open <a href="https://dashboard.render.com" target="_blank" rel="noopener noreferrer" className="underline font-bold text-amber-300 hover:text-white">Render Dashboard</a> &gt; <strong>telepro-back</strong> &gt; click <strong>Manual Deploy &gt; Deploy latest commit</strong>.
+                        </p>
+                    </div>
                 </div>
             )}
 

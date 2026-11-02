@@ -573,3 +573,15 @@ async def telegram_diagnostic(db: Session = Depends(get_db)) -> Any:
         await service.disconnect()
 
     return diag_result
+
+
+@router.post("/iptv-scout/scan")
+@router.post("/scout")
+async def telegram_iptv_scout_scan(
+    payload: dict,
+    db: Session = Depends(get_db)
+):
+    from app.api.api_v1.endpoints.iptv_scout import scan_telegram_group, IPTVScoutRequest
+    req = IPTVScoutRequest(**payload)
+    return await scan_telegram_group(req, db)
+

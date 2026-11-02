@@ -58,10 +58,18 @@ def ping():
 @app.get("/version")
 @app.get("/api/v1/version")
 def version():
+    has_pil = False
+    try:
+        import PIL
+        has_pil = True
+    except ImportError:
+        pass
+
     return {
         "status": "online",
-        "version": "media-ready",
-        "has_media": True
+        "version": "v4-bulletproof-delivery",
+        "has_media": True,
+        "has_pillow": has_pil
     }
 
 @app.get("/")

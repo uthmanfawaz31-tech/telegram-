@@ -11,3 +11,4 @@ python-dotenv
 pillow
 httpx
 curl_cffi
+playwright

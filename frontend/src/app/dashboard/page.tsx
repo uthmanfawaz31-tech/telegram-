@@ -39,7 +39,10 @@ import {
     ScanSearch,
     ExternalLink,
     CheckCheck,
-    Loader2
+    Loader2,
+    Tv,
+    Download,
+    MessageSquare
 } from "lucide-react";
 import Background from "@/components/Background";
 import FadeIn from "@/components/FadeIn";
@@ -373,6 +376,15 @@ export default function Dashboard() {
                             setIsSidebarVisible(false);
                         }}
                     />
+                    <NavItem
+                        icon={<Tv className="w-4 h-4" />}
+                        label="IPTV Scout"
+                        active={activeTab === "IPTVScout"}
+                        onClick={() => {
+                            setActiveTab("IPTVScout");
+                            setIsSidebarVisible(false);
+                        }}
+                    />
                 </nav>
 
                 <div className="p-4 mt-auto border-t border-white/5">
@@ -426,6 +438,7 @@ export default function Dashboard() {
                                 {activeTab === "Analytics" && "Performance metrics, group delivery rates, and reach insights."}
                                 {activeTab === "Settings" && "Telegram MTProto credentials, delay preferences, and account management."}
                                 {activeTab === "FiverrScout" && "Paste a Fiverr seller profile URL to extract reviewers and highlight those active on Telegram."}
+                                {activeTab === "IPTVScout" && "Scout Telegram groups for IPTV buyer requests, trials, usernames, and message timestamps."}
                             </p>
                         </div>
                     </div>
@@ -680,6 +693,7 @@ export default function Dashboard() {
                         <SettingsView onRelogin={() => router.push("/")} />
                     )}
                     {activeTab === "FiverrScout" && <FiverrScoutView />}
+                    {activeTab === "IPTVScout" && <IPTVScoutView />}
                 </FadeIn>
 
                 {/* Modals */}
@@ -3399,6 +3413,571 @@ function FiverrScoutView() {
                                     </div>
                                 </div>
                             ))}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+/* =========================================================================
+   IPTV SCOUT VIEW
+   Scout Telegram groups for IPTV leads, buyers, timestamps & usernames.
+   ========================================================================= */
+
+interface MessageLead {
+    message_id: number;
+    sender_id?: string | null;
+    username?: string | null;
+    display_name: string;
+    is_bot: boolean;
+    date_str: string;
+    date_iso: string;
+    message_text: string;
+    is_iptv_related: boolean;
+    relevance_score: "High" | "Medium" | "General" | "None";
+    intent_category?: string | null;
+    matched_keywords: string[];
+}
+
+interface IPTVScoutResponse {
+    group_link: string;
+    group_title: string;
+    group_id: string;
+    group_username?: string | null;
+    total_scanned: number;
+    total_leads: number;
+    high_intent_count: number;
+    unique_users_count: number;
+    scan_duration_seconds: number;
+    leads: MessageLead[];
+    error?: string | null;
+}
+
+function IPTVScoutView() {
+    const [groupLink, setGroupLink] = useState("");
+    const [limit, setLimit] = useState(200);
+    const [filterIptvOnly, setFilterIptvOnly] = useState(true);
+    const [customKeywords, setCustomKeywords] = useState("");
+    const [scanning, setScanning] = useState(false);
+    const [scanResult, setScanResult] = useState<IPTVScoutResponse | null>(null);
+    const [error, setError] = useState("");
+    const [categoryFilter, setCategoryFilter] = useState<string>("all");
+    const [searchQuery, setSearchQuery] = useState("");
+    const [copyNotice, setCopyNotice] = useState("");
+
+    const showCopyFeedback = (msg: string) => {
+        setCopyNotice(msg);
+        setTimeout(() => setCopyNotice(""), 3000);
+    };
+
+    const handleScan = async () => {
+        if (!groupLink.trim()) {
+            setError("Please enter a Telegram group link or @username.");
+            return;
+        }
+        setScanning(true);
+        setError("");
+        setScanResult(null);
+
+        try {
+            const res = await fetch(`${API_BASE}/iptv-scout/scan`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    group_link: groupLink.trim(),
+                    limit: Number(limit) || 200,
+                    filter_iptv_only: filterIptvOnly,
+                    custom_keywords: customKeywords.trim() || null,
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.detail || "Group scout failed");
+            setScanResult(data);
+        } catch (err: any) {
+            setError(err.message || "Failed to scout Telegram group.");
+        } finally {
+            setScanning(false);
+        }
+    };
+
+    const filteredLeads = useMemo(() => {
+        if (!scanResult) return [];
+        return scanResult.leads.filter((lead) => {
+            // Category filter
+            if (categoryFilter === "high" && lead.relevance_score !== "High") return false;
+            if (categoryFilter === "trial" && !lead.intent_category?.toLowerCase().includes("trial")) return false;
+            if (categoryFilter === "setup" && !lead.intent_category?.toLowerCase().includes("setup")) return false;
+            if (categoryFilter === "tech" && !lead.intent_category?.toLowerCase().includes("tech") && !lead.intent_category?.toLowerCase().includes("channels")) return false;
+
+            // Search query
+            if (searchQuery.trim()) {
+                const q = searchQuery.toLowerCase();
+                const matchedInKeywords = lead.matched_keywords?.some((k) => k.toLowerCase().includes(q));
+                return (
+                    (lead.username || "").toLowerCase().includes(q) ||
+                    lead.display_name.toLowerCase().includes(q) ||
+                    lead.message_text.toLowerCase().includes(q) ||
+                    (lead.intent_category || "").toLowerCase().includes(q) ||
+                    matchedInKeywords
+                );
+            }
+            return true;
+        });
+    }, [scanResult, categoryFilter, searchQuery]);
+
+    const copyAllUsernames = () => {
+        if (!scanResult) return;
+        const usernames = Array.from(
+            new Set(
+                scanResult.leads
+                    .filter((l) => l.username)
+                    .map((l) => `@${l.username}`)
+            )
+        );
+        if (usernames.length === 0) {
+            showCopyFeedback("No public usernames found to copy.");
+            return;
+        }
+        navigator.clipboard.writeText(usernames.join("\n")).then(() => {
+            showCopyFeedback(`Copied ${usernames.length} usernames!`);
+        }).catch(() => {});
+    };
+
+    const copySingleUsername = (username?: string | null) => {
+        if (!username) return;
+        navigator.clipboard.writeText(`@${username}`).then(() => {
+            showCopyFeedback(`Copied @${username}`);
+        }).catch(() => {});
+    };
+
+    const copyMessageText = (text: string) => {
+        navigator.clipboard.writeText(text).then(() => {
+            showCopyFeedback("Message copied!");
+        }).catch(() => {});
+    };
+
+    const exportToCSV = () => {
+        if (!scanResult || scanResult.leads.length === 0) return;
+        const headers = ["Message ID", "Username", "Display Name", "User ID", "Date & Time (UTC)", "Relevance", "Intent Category", "Matched Keywords", "Message Content"];
+        const rows = scanResult.leads.map((l) => [
+            l.message_id,
+            l.username ? `@${l.username}` : "",
+            `"${(l.display_name || "").replace(/"/g, '""')}"`,
+            l.sender_id || "",
+            l.date_str,
+            l.relevance_score,
+            `"${(l.intent_category || "").replace(/"/g, '""')}"`,
+            `"${(l.matched_keywords || []).join(", ").replace(/"/g, '""')}"`,
+            `"${(l.message_text || "").replace(/"/g, '""')}"`,
+        ]);
+
+        const csvContent = "\uFEFF" + [headers.join(","), ...rows.map((r) => r.join(","))].join("\r\n");
+        const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        const cleanTitle = (scanResult.group_title || "telegram_group").replace(/[^a-zA-Z0-9_-]/g, "_");
+        link.setAttribute("href", url);
+        link.setAttribute("download", `iptv_leads_${cleanTitle}_${Date.now()}.csv`);
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        showCopyFeedback("Exported CSV spreadsheet!");
+    };
+
+    return (
+        <div className="space-y-6">
+            {/* Top Notification Toast */}
+            {copyNotice && (
+                <div className="fixed bottom-6 right-6 z-50 px-4 py-2.5 rounded-xl bg-emerald-600 text-white text-xs font-bold shadow-2xl flex items-center space-x-2 animate-bounce">
+                    <CheckCheck className="w-4 h-4" />
+                    <span>{copyNotice}</span>
+                </div>
+            )}
+
+            {/* Input Card */}
+            <div className="blue-glass p-6 rounded-3xl border border-white/5 space-y-5">
+                <div className="flex items-center space-x-3">
+                    <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                        <Tv className="w-5 h-5" />
+                    </div>
+                    <div>
+                        <h3 className="font-bold text-white text-base">Telegram IPTV Scout & Lead Extractor</h3>
+                        <p className="text-xs text-slate-400">
+                            Enter any Telegram group link to extract usernames, timestamps, message logs, and detect prospective clients asking for IPTV, trials, setups, or subscriptions.
+                        </p>
+                    </div>
+                </div>
+
+                {/* Form Controls */}
+                <div className="space-y-4">
+                    <div className="space-y-2">
+                        <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                            Telegram Group Link or @Username
+                        </label>
+                        <div className="flex flex-col md:flex-row gap-3">
+                            <input
+                                type="text"
+                                value={groupLink}
+                                onChange={(e) => setGroupLink(e.target.value)}
+                                placeholder="https://t.me/groupname, t.me/+invitehash, or @username"
+                                disabled={scanning}
+                                className="flex-1 bg-slate-900/80 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-all font-mono"
+                                onKeyDown={(e) => e.key === "Enter" && handleScan()}
+                            />
+                            <button
+                                onClick={handleScan}
+                                disabled={scanning || !groupLink.trim()}
+                                className="px-6 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-bold flex items-center justify-center space-x-2 transition-all active:scale-95 shadow-lg shadow-emerald-900/30 whitespace-nowrap"
+                            >
+                                {scanning ? (
+                                    <>
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        <span>Scouting Group…</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Tv className="w-4 h-4" />
+                                        <span>Scout Group</span>
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Secondary Filters */}
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-1">
+                        <div>
+                            <label className="text-[11px] font-semibold text-slate-400 mb-1.5 block">
+                                Scan Depth (Messages)
+                            </label>
+                            <select
+                                value={limit}
+                                onChange={(e) => setLimit(Number(e.target.value))}
+                                disabled={scanning}
+                                className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+                            >
+                                <option value={50}>Recent 50 Messages</option>
+                                <option value={100}>Recent 100 Messages</option>
+                                <option value={200}>Recent 200 Messages (Recommended)</option>
+                                <option value={500}>Recent 500 Messages</option>
+                                <option value={1000}>Recent 1000 Messages</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="text-[11px] font-semibold text-slate-400 mb-1.5 block">
+                                Custom Keywords (Optional, comma-separated)
+                            </label>
+                            <input
+                                type="text"
+                                value={customKeywords}
+                                onChange={(e) => setCustomKeywords(e.target.value)}
+                                placeholder="e.g. firestick, uk sports, 4k"
+                                disabled={scanning}
+                                className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
+                            />
+                        </div>
+
+                        <div className="flex items-end pb-1">
+                            <label className="flex items-center space-x-2.5 cursor-pointer text-xs text-slate-300">
+                                <input
+                                    type="checkbox"
+                                    checked={filterIptvOnly}
+                                    onChange={(e) => setFilterIptvOnly(e.target.checked)}
+                                    disabled={scanning}
+                                    className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+                                />
+                                <span>Filter IPTV inquiries only (hide chat noise)</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                {/* How it works banner */}
+                <div className="p-4 rounded-2xl bg-slate-900/50 border border-white/5 text-xs text-slate-400 space-y-1.5">
+                    <p className="font-semibold text-slate-300 mb-1 flex items-center space-x-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                        <span>Intelligent Lead Detection</span>
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2 pt-1 text-[11px]">
+                        <div className="flex items-start space-x-2">
+                            <span className="text-emerald-400 font-bold">1.</span>
+                            <span>Resolves public @group or private t.me/+ invite links and connects using your Telegram session.</span>
+                        </div>
+                        <div className="flex items-start space-x-2">
+                            <span className="text-emerald-400 font-bold">2.</span>
+                            <span>Retrieves message history with exact usernames, display names, and UTC date/time stamps.</span>
+                        </div>
+                        <div className="flex items-start space-x-2">
+                            <span className="text-emerald-400 font-bold">3.</span>
+                            <span>Identifies buyer intent (seeking providers, requesting trials, app setups, M3U/Xtream inquiries).</span>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Scanning loader */}
+                {scanning && (
+                    <div className="flex items-center space-x-3 p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-sm">
+                        <Loader2 className="w-4 h-4 animate-spin flex-shrink-0" />
+                        <span>Connecting to Telegram group and scouting messages… This may take a few seconds.</span>
+                    </div>
+                )}
+
+                {/* Error Banner */}
+                {error && (
+                    <div className="flex items-center space-x-3 p-3.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-sm">
+                        <XCircle className="w-4 h-4 flex-shrink-0" />
+                        <span>{error}</span>
+                    </div>
+                )}
+            </div>
+
+            {/* Results Section */}
+            {scanResult && (
+                <div className="space-y-5">
+                    {/* Metrics Overview Cards */}
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                        <div className="blue-glass p-4 rounded-2xl border border-white/5 text-center">
+                            <p className="text-2xl font-bold text-white">{scanResult.total_scanned}</p>
+                            <p className="text-xs text-slate-400 mt-1">Messages Scanned</p>
+                        </div>
+                        <div className="blue-glass p-4 rounded-2xl border border-emerald-500/30 bg-emerald-950/10 text-center">
+                            <p className="text-2xl font-bold text-emerald-400">{scanResult.total_leads}</p>
+                            <p className="text-xs text-slate-400 mt-1">IPTV Leads Found</p>
+                        </div>
+                        <div className="blue-glass p-4 rounded-2xl border border-white/5 text-center">
+                            <p className="text-2xl font-bold text-amber-400">{scanResult.high_intent_count}</p>
+                            <p className="text-xs text-slate-400 mt-1">High Intent (Buyers)</p>
+                        </div>
+                        <div className="blue-glass p-4 rounded-2xl border border-white/5 text-center">
+                            <p className="text-2xl font-bold text-cyan-400">{scanResult.unique_users_count}</p>
+                            <p className="text-xs text-slate-400 mt-1">Unique Users</p>
+                        </div>
+                        <div className="blue-glass p-4 rounded-2xl border border-white/5 text-center col-span-2 md:col-span-1">
+                            <p className="text-2xl font-bold text-blue-400">{scanResult.scan_duration_seconds}s</p>
+                            <p className="text-xs text-slate-400 mt-1">Scan Duration</p>
+                        </div>
+                    </div>
+
+                    {/* Group Info & Export Actions Bar */}
+                    <div className="blue-glass px-5 py-3.5 rounded-2xl border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-3">
+                        <div className="text-sm flex items-center space-x-2">
+                            <span className="text-slate-400">Group: </span>
+                            <span className="font-bold text-white">{scanResult.group_title}</span>
+                            {scanResult.group_username && (
+                                <a
+                                    href={`https://t.me/${scanResult.group_username}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-blue-400 hover:text-blue-300 font-semibold inline-flex items-center space-x-1 text-xs"
+                                >
+                                    <span>@{scanResult.group_username}</span>
+                                    <ExternalLink className="w-3 h-3" />
+                                </a>
+                            )}
+                        </div>
+
+                        <div className="flex items-center space-x-2.5">
+                            {scanResult.unique_users_count > 0 && (
+                                <button
+                                    onClick={copyAllUsernames}
+                                    className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-400 text-xs font-semibold transition-all active:scale-95"
+                                >
+                                    <Copy className="w-3.5 h-3.5" />
+                                    <span>Copy Usernames ({scanResult.unique_users_count})</span>
+                                </button>
+                            )}
+                            {scanResult.total_leads > 0 && (
+                                <button
+                                    onClick={exportToCSV}
+                                    className="flex items-center space-x-1.5 px-3.5 py-2 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-400 text-xs font-semibold transition-all active:scale-95"
+                                >
+                                    <Download className="w-3.5 h-3.5" />
+                                    <span>Export CSV</span>
+                                </button>
+                            )}
+                        </div>
+                    </div>
+
+                    {scanResult.error && (
+                        <div className="flex items-center space-x-2 p-3 rounded-xl bg-yellow-500/10 border border-yellow-500/20 text-yellow-400 text-xs">
+                            <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+                            <span>Notice: {scanResult.error}</span>
+                        </div>
+                    )}
+
+                    {/* Filter Pills + Search Query */}
+                    <div className="blue-glass p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row md:items-center gap-3">
+                        <div className="flex items-center space-x-1.5 overflow-x-auto pb-1 md:pb-0 flex-shrink-0">
+                            {[
+                                { id: "all", label: `All (${scanResult.total_leads})` },
+                                { id: "high", label: `Buyers (${scanResult.high_intent_count})` },
+                                { id: "trial", label: "Trials" },
+                                { id: "setup", label: "App & Setups" },
+                                { id: "tech", label: "Channels / Tech" },
+                            ].map((f) => (
+                                <button
+                                    key={f.id}
+                                    onClick={() => setCategoryFilter(f.id)}
+                                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap ${
+                                        categoryFilter === f.id
+                                            ? "bg-emerald-600 text-white shadow-md shadow-emerald-900/30"
+                                            : "bg-white/5 hover:bg-white/10 text-slate-400"
+                                    }`}
+                                >
+                                    {f.label}
+                                </button>
+                            ))}
+                        </div>
+
+                        <div className="relative flex-1">
+                            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                            <input
+                                type="text"
+                                value={searchQuery}
+                                onChange={(e) => setSearchQuery(e.target.value)}
+                                placeholder="Search leads by username, keyword, or message text…"
+                                className="w-full bg-slate-900/80 border border-white/10 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-all"
+                            />
+                        </div>
+                    </div>
+
+                    {/* Leads Feed */}
+                    {filteredLeads.length === 0 ? (
+                        <div className="blue-glass p-12 rounded-3xl text-center text-slate-400 border border-white/5 space-y-2">
+                            <Tv className="w-8 h-8 mx-auto text-slate-600 mb-2" />
+                            <p className="font-semibold text-slate-300">No leads match your current filter.</p>
+                            <p className="text-xs text-slate-500">
+                                Try changing the category filter or clearing the search query.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            {filteredLeads.map((lead) => {
+                                const isHigh = lead.relevance_score === "High";
+                                const isMedium = lead.relevance_score === "Medium";
+                                const badgeColor = isHigh
+                                    ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400"
+                                    : isMedium
+                                    ? "bg-amber-500/10 border-amber-500/30 text-amber-400"
+                                    : "bg-sky-500/10 border-sky-500/30 text-sky-400";
+
+                                return (
+                                    <div
+                                        key={lead.message_id}
+                                        className={`p-4 rounded-2xl border transition-all ${
+                                            isHigh
+                                                ? "bg-emerald-950/20 border-emerald-500/30 shadow-md shadow-emerald-950/20"
+                                                : "bg-slate-900/60 border-white/5 hover:border-white/10"
+                                        }`}
+                                    >
+                                        {/* Card Header: User, Date, Intent Badge */}
+                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 border-b border-white/5">
+                                            <div className="flex items-center space-x-3 overflow-hidden">
+                                                <div
+                                                    className={`w-9 h-9 rounded-xl flex items-center justify-center font-bold text-xs flex-shrink-0 ${
+                                                        isHigh
+                                                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                                            : "bg-white/5 text-slate-300 border border-white/10"
+                                                    }`}
+                                                >
+                                                    {lead.display_name.charAt(0).toUpperCase()}
+                                                </div>
+
+                                                <div className="overflow-hidden">
+                                                    <div className="flex items-center space-x-2">
+                                                        <span className="font-bold text-sm text-white truncate">
+                                                            {lead.display_name}
+                                                        </span>
+                                                        {lead.username ? (
+                                                            <a
+                                                                href={`https://t.me/${lead.username}`}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="text-emerald-400 hover:text-emerald-300 font-mono text-xs flex items-center space-x-1"
+                                                            >
+                                                                <span>@{lead.username}</span>
+                                                                <ExternalLink className="w-2.5 h-2.5" />
+                                                            </a>
+                                                        ) : (
+                                                            <span className="text-[11px] text-slate-500 font-mono">
+                                                                ID: {lead.sender_id || "N/A"}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            {/* Timestamp & Intent Badge */}
+                                            <div className="flex items-center space-x-2 flex-wrap sm:flex-nowrap">
+                                                <span className="inline-flex items-center space-x-1 text-[11px] text-slate-400 bg-white/5 px-2.5 py-1 rounded-lg font-mono">
+                                                    <Clock className="w-3 h-3 text-slate-500" />
+                                                    <span>{lead.date_str}</span>
+                                                </span>
+
+                                                {lead.intent_category && (
+                                                    <span className={`inline-flex items-center space-x-1 text-[11px] font-bold px-2.5 py-1 rounded-lg border ${badgeColor}`}>
+                                                        <span>{lead.intent_category}</span>
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        {/* Card Body: Message Text */}
+                                        <div className="mt-3">
+                                            <p className="text-sm text-slate-200 leading-relaxed bg-black/30 p-3 rounded-xl border border-white/5 font-sans whitespace-pre-wrap">
+                                                {lead.message_text}
+                                            </p>
+                                        </div>
+
+                                        {/* Card Footer: Keywords and Actions */}
+                                        <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+                                            <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
+                                                {lead.matched_keywords?.map((kw, i) => (
+                                                    <span
+                                                        key={i}
+                                                        className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-300 border border-emerald-500/20"
+                                                    >
+                                                        #{kw}
+                                                    </span>
+                                                ))}
+                                            </div>
+
+                                            <div className="flex items-center space-x-2">
+                                                {lead.username && (
+                                                    <a
+                                                        href={`https://t.me/${lead.username}`}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="text-xs px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 font-semibold flex items-center space-x-1"
+                                                    >
+                                                        <MessageSquare className="w-3 h-3" />
+                                                        <span>Message</span>
+                                                    </a>
+                                                )}
+                                                {lead.username && (
+                                                    <button
+                                                        onClick={() => copySingleUsername(lead.username)}
+                                                        className="text-xs px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 font-medium flex items-center space-x-1"
+                                                    >
+                                                        <Copy className="w-3 h-3" />
+                                                        <span>Copy @</span>
+                                                    </button>
+                                                )}
+                                                <button
+                                                    onClick={() => copyMessageText(lead.message_text)}
+                                                    className="text-xs px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-400 font-medium flex items-center space-x-1"
+                                                >
+                                                    <FileText className="w-3 h-3" />
+                                                    <span>Copy Text</span>
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                );
+                            })}
                         </div>
                     )}
                 </div>

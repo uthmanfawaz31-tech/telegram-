@@ -98,7 +98,7 @@ async def run_broadcast_worker(
         target_media = campaign.media_path or media_path
         target_url = campaign.media_url or media_url
 
-        if target_media and os.path.exists(target_media):
+        if target_media and os.path.exists(target_media) and os.path.getsize(target_media) > 500:
             local_media_path = target_media
         elif target_url and target_url.startswith("data:"):
             try:
@@ -110,7 +110,8 @@ async def run_broadcast_worker(
                 _, b64 = target_url.split(",", 1) if "," in target_url else ("", target_url)
                 with open(save_path, "wb") as f:
                     f.write(base64.b64decode(b64))
-                local_media_path = save_path
+                if os.path.exists(save_path) and os.path.getsize(save_path) > 500:
+                    local_media_path = save_path
             except Exception as pe:
                 logger.warning(f"Could not cache base64 media locally: {pe}")
         elif target_url and (target_url.startswith("http://") or target_url.startswith("https://")):
@@ -119,14 +120,23 @@ async def run_broadcast_worker(
                 os.makedirs(UPLOAD_DIR, exist_ok=True)
                 fname = target_url.rstrip("/").split("/")[-1].split("?")[0]
                 local_candidate = os.path.join(UPLOAD_DIR, fname)
-                if os.path.exists(local_candidate):
+                if os.path.exists(local_candidate) and os.path.getsize(local_candidate) > 500:
                     local_media_path = local_candidate
                 else:
                     import urllib.request
-                    save_path = os.path.join(UPLOAD_DIR, f"cached_{campaign_id}_{fname}")
-                    urllib.request.urlretrieve(target_url, save_path)
-                    if os.path.exists(save_path):
-                        local_media_path = save_path
+                    req = urllib.request.Request(target_url, headers={"User-Agent": "TelePro/1.0"})
+                    try:
+                        with urllib.request.urlopen(req, timeout=10) as resp:
+                            if resp.status == 200:
+                                content = resp.read()
+                                if len(content) > 500:
+                                    save_path = os.path.join(UPLOAD_DIR, f"cached_{campaign_id}_{fname}")
+                                    with open(save_path, "wb") as f:
+                                        f.write(content)
+                                    local_media_path = save_path
+                    except Exception as dl_err:
+                        logger.warning(f"Media URL {target_url} failed download ({dl_err}). Falling back to text.")
+                        local_media_path = None
             except Exception as ue:
                 logger.warning(f"Could not download remote media locally: {ue}")
 

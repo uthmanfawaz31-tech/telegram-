@@ -512,3 +512,64 @@ async def join_group(
         raise HTTPException(status_code=400, detail=f"Failed to join group: {str(e)}")
     finally:
         await service.disconnect()
+
+@router.get("/diagnostic")
+async def telegram_diagnostic(db: Session = Depends(get_db)) -> Any:
+    """
+    Real-time diagnostic endpoint:
+    1. Tests MTProto connection and account integrity.
+    2. Tests sending a sample text & photo to 'Saved Messages' (me).
+    3. Checks recent broadcast logs with exact error messages.
+    """
+    account = db.query(models.TelegramAccount).filter(models.TelegramAccount.is_connected == True).first()
+    if not account or not account.session_string:
+        return {"status": "error", "detail": "No connected Telegram account"}
+
+    recent_logs = db.query(models.BroadcastLog).order_by(models.BroadcastLog.id.desc()).limit(20).all()
+    logs_summary = [
+        {
+            "id": l.id,
+            "campaign_id": l.campaign_id,
+            "group_id": l.group_id,
+            "group_name": l.group_name,
+            "status": l.status,
+            "error_message": l.error_message,
+            "sent_at": l.sent_at.isoformat() if l.sent_at else None
+        }
+        for l in recent_logs
+    ]
+
+    service = TelegramService(
+        session_string=account.session_string,
+        api_id=account.api_id,
+        api_hash=account.api_hash
+    )
+    
+    diag_result = {
+        "account_phone": account.phone,
+        "account_name": f"{account.first_name} {account.last_name or ''}".strip(),
+        "recent_broadcast_logs": logs_summary,
+        "connection": "unknown",
+        "saved_messages_test": "unknown",
+        "error": None
+    }
+
+    try:
+        await service.connect()
+        me = await service.client.get_me()
+        diag_result["connection"] = "connected"
+        diag_result["me_id"] = me.id
+        diag_result["restricted"] = getattr(me, "restricted", False)
+        diag_result["restriction_reason"] = getattr(me, "restriction_reason", None)
+
+        test_msg = await service.client.send_message("me", "TelePro Diagnostic Check: Operational.")
+        diag_result["saved_messages_test"] = "success" if test_msg else "no_response"
+    except Exception as e:
+        import traceback
+        diag_result["connection"] = "failed"
+        diag_result["error"] = str(e)
+        diag_result["traceback"] = traceback.format_exc()
+    finally:
+        await service.disconnect()
+
+    return diag_result

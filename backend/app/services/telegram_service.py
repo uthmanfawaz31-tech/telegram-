@@ -211,20 +211,31 @@ class TelegramService:
 
         # Determine media target
         media_target = None
-        if media_path and os.path.exists(media_path):
+        if media_path and os.path.exists(media_path) and os.path.getsize(media_path) > 500:
             media_target = media_path
-        elif media_url and (media_url.startswith("http://") or media_url.startswith("https://")):
-            media_target = media_url
         elif media_url and media_url.startswith("data:"):
             try:
                 import base64
                 import io
                 _, b64 = media_url.split(",", 1) if "," in media_url else ("", media_url)
-                file_bytes = io.BytesIO(base64.b64decode(b64))
-                file_bytes.name = "media.png" if "image" in media_url[:30] else "media.mp4"
-                media_target = file_bytes
+                raw_bytes = base64.b64decode(b64)
+                if len(raw_bytes) > 500:
+                    file_bytes = io.BytesIO(raw_bytes)
+                    file_bytes.name = "media.png" if "image" in media_url[:30] else "media.mp4"
+                    media_target = file_bytes
             except Exception as e:
                 logger.warning(f"Failed to decode base64 data url: {e}")
+        elif media_url and (media_url.startswith("http://") or media_url.startswith("https://")):
+            # If self-hosted URL on Render, ensure the file is still present on local disk and not a 404
+            if "onrender.com" in media_url:
+                local_check = os.path.join(os.getcwd(), "uploads", media_url.rstrip("/").split("/")[-1].split("?")[0])
+                if os.path.exists(local_check) and os.path.getsize(local_check) > 500:
+                    media_target = local_check
+                else:
+                    logger.warning(f"Self-hosted media URL {media_url} was reset after deployment. Delivering text-only message.")
+                    media_target = None
+            else:
+                media_target = media_url
 
         # Send message with retry on FloodWait or temporary socket drop
         max_retries = 3

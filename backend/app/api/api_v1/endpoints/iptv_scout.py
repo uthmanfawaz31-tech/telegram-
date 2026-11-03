@@ -352,6 +352,27 @@ class MessageLead(BaseModel):
     matched_keywords: List[str] = []
 
 
+class DiscoveredGroup(BaseModel):
+    title: str
+    username: Optional[str] = None
+    link: str
+    description: Optional[str] = None
+    members_count: Optional[int] = None
+    source: str = "@en_SearchBot"
+
+
+class DiscoverGroupsRequest(BaseModel):
+    query: str = "iptv"
+    limit: Optional[int] = Field(25, ge=5, le=50)
+
+
+class DiscoverGroupsResponse(BaseModel):
+    query: str
+    total_found: int
+    groups: List[DiscoveredGroup]
+    error: Optional[str] = None
+
+
 class IPTVScoutResponse(BaseModel):
     group_link: str
     group_title: str
@@ -367,8 +388,154 @@ class IPTVScoutResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Endpoint
+# Endpoints
 # ---------------------------------------------------------------------------
+
+
+@router.post("/discover-groups", response_model=DiscoverGroupsResponse)
+async def discover_telegram_groups(
+    payload: DiscoverGroupsRequest,
+    db: Session = Depends(get_db),
+) -> DiscoverGroupsResponse:
+    """
+    Discover active Telegram groups and channels relating to IPTV using @en_SearchBot
+    and Telegram's Global Search Directory.
+    """
+    raw_query = payload.query.strip() or "iptv"
+
+    account = (
+        db.query(models.TelegramAccount)
+        .filter(models.TelegramAccount.is_connected == True)
+        .first()
+    )
+    if not account or not account.session_string:
+        raise HTTPException(
+            status_code=401,
+            detail="SESSION_MISSING: No active Telegram account connected. Please login in Settings first.",
+        )
+
+    service = TelegramService(
+        session_string=account.session_string,
+        api_id=account.api_id,
+        api_hash=account.api_hash,
+    )
+
+    try:
+        await service.connect()
+    except Exception as e:
+        logger.error(f"Failed to connect to Telegram: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Telegram connection failed: {str(e)}"
+        )
+
+    client = service.client
+    discovered: List[DiscoveredGroup] = []
+    seen_links = set()
+
+    try:
+        # 1. Query @en_SearchBot via conversation
+        try:
+            bot_entity = await client.get_entity("en_SearchBot")
+            async with client.conversation(bot_entity, timeout=12) as conv:
+                await conv.send_message(raw_query)
+                bot_msg = await conv.get_response()
+                if bot_msg:
+                    full_text = bot_msg.text or bot_msg.message or ""
+
+                    # Check text entities for links
+                    if bot_msg.entities:
+                        for ent in bot_msg.entities:
+                            if hasattr(ent, "url") and ent.url and "t.me" in ent.url:
+                                offset = getattr(ent, "offset", 0)
+                                length = getattr(ent, "length", 0)
+                                anchor_text = full_text[offset : offset + length].strip() if length else ""
+                                clean_link = ent.url.split("?")[0].rstrip("/")
+                                uname = clean_link.split("/")[-1].replace("@", "")
+                                if clean_link not in seen_links and uname.lower() != "en_searchbot":
+                                    seen_links.add(clean_link)
+                                    discovered.append(
+                                        DiscoveredGroup(
+                                            title=anchor_text or uname,
+                                            username=uname if not uname.startswith("+") else None,
+                                            link=clean_link,
+                                            description="Indexed via @en_SearchBot",
+                                            source="@en_SearchBot",
+                                        )
+                                    )
+
+                    # Check inline keyboard buttons
+                    if bot_msg.reply_markup and hasattr(bot_msg.reply_markup, "rows"):
+                        for row in bot_msg.reply_markup.rows:
+                            for btn in row.buttons:
+                                if hasattr(btn, "url") and btn.url and "t.me" in btn.url:
+                                    clean_link = btn.url.split("?")[0].rstrip("/")
+                                    uname = clean_link.split("/")[-1].replace("@", "")
+                                    if clean_link not in seen_links and uname.lower() != "en_searchbot":
+                                        seen_links.add(clean_link)
+                                        discovered.append(
+                                            DiscoveredGroup(
+                                                title=btn.text or uname,
+                                                username=uname if not uname.startswith("+") else None,
+                                                link=clean_link,
+                                                description="Discovered via @en_SearchBot button",
+                                                source="@en_SearchBot",
+                                            )
+                                        )
+
+                    # Also extract raw t.me links from the text message
+                    raw_urls = re.findall(r"https?://t\.me/(?:joinchat/|\+)?([a-zA-Z0-9_-]+)", full_text)
+                    for r_sub in raw_urls:
+                        r_clean = f"https://t.me/{r_sub}"
+                        if r_clean not in seen_links and r_sub.lower() != "en_searchbot":
+                            seen_links.add(r_clean)
+                            discovered.append(
+                                DiscoveredGroup(
+                                    title=f"@{r_sub}",
+                                    username=r_sub if not r_sub.startswith("+") else None,
+                                    link=r_clean,
+                                    description="Discovered via @en_SearchBot",
+                                    source="@en_SearchBot",
+                                )
+                            )
+        except Exception as bot_err:
+            logger.warning(f"@en_SearchBot query note: {bot_err}")
+
+        # 2. Query Telegram Global Directory Search
+        try:
+            from telethon.tl.functions.contacts import SearchRequest
+            res = await client(SearchRequest(q=raw_query, limit=payload.limit or 25))
+            if hasattr(res, "chats"):
+                for chat in res.chats:
+                    uname = getattr(chat, "username", None)
+                    title = getattr(chat, "title", "Group")
+                    if uname:
+                        link_url = f"https://t.me/{uname}"
+                        if link_url not in seen_links:
+                            seen_links.add(link_url)
+                            participants = getattr(chat, "participants_count", None)
+                            is_channel = bool(getattr(chat, "broadcast", False))
+                            discovered.append(
+                                DiscoveredGroup(
+                                    title=title,
+                                    username=uname,
+                                    link=link_url,
+                                    description=f"{'Channel' if is_channel else 'Group'}{f' • {participants} members' if participants else ''}",
+                                    members_count=participants,
+                                    source="Telegram Global Directory",
+                                )
+                            )
+        except Exception as dir_err:
+            logger.warning(f"Telegram native directory search note: {dir_err}")
+
+    finally:
+        await service.disconnect()
+
+    return DiscoverGroupsResponse(
+        query=raw_query,
+        total_found=len(discovered),
+        groups=discovered,
+    )
+
 
 
 @router.post("/scan", response_model=IPTVScoutResponse)

@@ -45,7 +45,9 @@ import {
     MessageSquare,
     Globe,
     Languages,
-    Table as TableIcon
+    Table as TableIcon,
+    Compass,
+    Bot
 } from "lucide-react";
 import Background from "@/components/Background";
 import FadeIn from "@/components/FadeIn";
@@ -3510,6 +3512,63 @@ function IPTVScoutView() {
         setTimeout(() => setCopyNotice(""), 3000);
     };
 
+    // Discovery with @en_SearchBot state
+    const [showDiscovery, setShowDiscovery] = useState(false);
+    const [discoveryQuery, setDiscoveryQuery] = useState("iptv");
+    const [discovering, setDiscovering] = useState(false);
+    const [discoveredGroups, setDiscoveredGroups] = useState<Array<{
+        title: string;
+        username?: string | null;
+        link: string;
+        description?: string | null;
+        members_count?: number | null;
+        source: string;
+    }>>([]);
+    const [discoveryError, setDiscoveryError] = useState("");
+
+    const handleDiscoverGroups = async () => {
+        if (!discoveryQuery.trim()) return;
+        setDiscovering(true);
+        setDiscoveryError("");
+        setDiscoveredGroups([]);
+
+        const endpoints = [
+            `${API_BASE}/iptv-scout/discover-groups`,
+            `${API_BASE}/scout/discover-groups`,
+            `${API_BASE}/telegram/iptv-scout/discover-groups`,
+            `${API_BASE}/telegram/scout/discover-groups`,
+        ];
+
+        let success = false;
+        for (const ep of endpoints) {
+            try {
+                const res = await fetch(ep, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ query: discoveryQuery.trim(), limit: 30 }),
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    setDiscoveredGroups(data.groups || []);
+                    success = true;
+                    break;
+                }
+            } catch (err) {
+                // continue to next endpoint
+            }
+        }
+
+        if (!success) {
+            setDiscoveryError("Could not query @en_SearchBot. Make sure your Telegram account is connected in Settings.");
+        }
+        setDiscovering(false);
+    };
+
+    const selectDiscoveredGroup = (link: string) => {
+        setGroupLink(link);
+        showCopyFeedback("Group selected! Click 'Scout Group' to scan.");
+    };
+
     const handleScan = async () => {
         if (!groupLink.trim()) {
             setError("Please enter a Telegram group link or @username.");
@@ -3716,17 +3775,109 @@ function IPTVScoutView() {
 
             {/* Input Card */}
             <div className="blue-glass p-6 rounded-3xl border border-white/5 space-y-5">
-                <div className="flex items-center space-x-3">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
-                        <Tv className="w-5 h-5" />
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center space-x-3">
+                        <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-emerald-500/20 to-teal-500/20 border border-emerald-500/30 flex items-center justify-center text-emerald-400">
+                            <Tv className="w-5 h-5" />
+                        </div>
+                        <div>
+                            <h3 className="font-bold text-white text-base">Telegram IPTV Scout & Multilingual Lead Extractor</h3>
+                            <p className="text-xs text-slate-400">
+                                Enter any Telegram group link to extract usernames, timestamps, and message logs in a clean tabular form.
+                            </p>
+                        </div>
                     </div>
-                    <div>
-                        <h3 className="font-bold text-white text-base">Telegram IPTV Scout & Multilingual Lead Extractor</h3>
-                        <p className="text-xs text-slate-400">
-                            Enter any Telegram group link to extract usernames, timestamps, and message logs. Automatically translates foreign languages (Spanish, French, Arabic, German, etc.) to English and accurately flags IPTV buyer leads.
-                        </p>
-                    </div>
+
+                    <button
+                        onClick={() => setShowDiscovery(!showDiscovery)}
+                        className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-sky-500/10 hover:bg-sky-500/20 border border-sky-500/30 text-sky-300 text-xs font-bold transition-all shrink-0 self-start sm:self-auto"
+                    >
+                        <Bot className="w-3.5 h-3.5 text-sky-400" />
+                        <span>{showDiscovery ? "Hide Group Finder" : "Discover Groups (@en_SearchBot)"}</span>
+                    </button>
                 </div>
+
+                {/* Group Finder powered by @en_SearchBot */}
+                {showDiscovery && (
+                    <div className="p-4 rounded-2xl bg-gradient-to-br from-slate-900/95 to-sky-950/40 border border-sky-500/30 space-y-3.5 shadow-xl">
+                        <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center space-x-2">
+                                <Compass className="w-4 h-4 text-sky-400" />
+                                <span className="text-xs font-bold text-white">Find IPTV Groups & Chats via @en_SearchBot</span>
+                            </div>
+                            <span className="text-[10px] text-sky-300 bg-sky-500/20 px-2 py-0.5 rounded-md font-mono">
+                                Live Telegram Discovery
+                            </span>
+                        </div>
+
+                        <div className="flex gap-2">
+                            <div className="relative flex-1">
+                                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                                <input
+                                    type="text"
+                                    value={discoveryQuery}
+                                    onChange={(e) => setDiscoveryQuery(e.target.value)}
+                                    placeholder="Search topic: iptv, m3u, iptv english, firestick..."
+                                    disabled={discovering}
+                                    className="w-full bg-slate-950/80 border border-white/10 rounded-xl pl-8 pr-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500"
+                                    onKeyDown={(e) => e.key === "Enter" && handleDiscoverGroups()}
+                                />
+                            </div>
+                            <button
+                                onClick={handleDiscoverGroups}
+                                disabled={discovering || !discoveryQuery.trim()}
+                                className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white text-xs font-bold flex items-center space-x-1.5 transition-all whitespace-nowrap shadow-md shadow-sky-950/50"
+                            >
+                                {discovering ? (
+                                    <>
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                        <span>Searching…</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <Search className="w-3 h-3" />
+                                        <span>Search @en_SearchBot</span>
+                                    </>
+                                )}
+                            </button>
+                        </div>
+
+                        {discoveryError && (
+                            <p className="text-xs text-red-400">{discoveryError}</p>
+                        )}
+
+                        {discoveredGroups.length > 0 && (
+                            <div className="space-y-2 pt-1">
+                                <div className="text-[11px] font-bold text-slate-400 flex items-center justify-between">
+                                    <span>Found {discoveredGroups.length} groups & channels:</span>
+                                    <span className="text-[10px] text-slate-500 font-normal">Click &quot;Select&quot; to load into scout</span>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-60 overflow-y-auto pr-1">
+                                    {discoveredGroups.map((grp, i) => (
+                                        <div
+                                            key={i}
+                                            className="p-2.5 rounded-xl bg-slate-900/90 border border-white/5 hover:border-sky-500/30 transition flex items-center justify-between gap-2.5"
+                                        >
+                                            <div className="overflow-hidden space-y-0.5">
+                                                <p className="text-xs font-bold text-white truncate">{grp.title}</p>
+                                                <p className="text-[10px] text-sky-400 font-mono truncate">{grp.link}</p>
+                                                {grp.description && (
+                                                    <p className="text-[10px] text-slate-500 truncate">{grp.description}</p>
+                                                )}
+                                            </div>
+                                            <button
+                                                onClick={() => selectDiscoveredGroup(grp.link)}
+                                                className="px-2.5 py-1 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold whitespace-nowrap shrink-0"
+                                            >
+                                                Select
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 {/* Form Controls */}
                 <div className="space-y-4">

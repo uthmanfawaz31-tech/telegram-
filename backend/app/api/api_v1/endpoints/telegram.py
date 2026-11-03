@@ -585,3 +585,15 @@ async def telegram_iptv_scout_scan(
     req = IPTVScoutRequest(**payload)
     return await scan_telegram_group(req, db)
 
+
+@router.post("/iptv-scout/discover-groups")
+@router.post("/scout/discover-groups")
+async def telegram_discover_groups(
+    payload: dict,
+    db: Session = Depends(get_db)
+):
+    from app.api.api_v1.endpoints.iptv_scout import discover_telegram_groups, DiscoverGroupsRequest
+    req = DiscoverGroupsRequest(**payload)
+    return await discover_telegram_groups(req, db)
+
+

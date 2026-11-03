@@ -236,16 +236,102 @@ async def _translate_to_english(
 
 
 # ---------------------------------------------------------------------------
-# Schemas
+# Schemas & Bot Helpers
 # ---------------------------------------------------------------------------
+
+
+def is_bot_user(
+    sender: Any,
+    username: Optional[str],
+    display_name: str,
+    msg_text: str,
+) -> bool:
+    """Accurately identify and filter out bots like Miss Rose, Rose chat, GroupHelp, Combot, etc."""
+    # 1. Telethon User.bot attribute
+    if sender and getattr(sender, "bot", False):
+        return True
+
+    # 2. Channel broadcast acting as a user in discussion group
+    if sender and isinstance(sender, Channel) and not getattr(sender, "megagroup", False):
+        return True
+
+    # 3. Username checks
+    if username:
+        u_lower = username.lower()
+        if (
+            u_lower.endswith("bot")
+            or "rose" in u_lower
+            or "missrose" in u_lower
+            or "grouphelp" in u_lower
+            or "combot" in u_lower
+            or "shieldy" in u_lower
+            or "antispam" in u_lower
+            or "channel_bot" in u_lower
+            or "welcome" in u_lower
+        ):
+            return True
+
+    # 4. Display name checks
+    d_lower = display_name.lower()
+    bot_names = [
+        "miss rose",
+        "rose",
+        "rosebot",
+        "group help",
+        "grouphelp",
+        "combot",
+        "antispam",
+        "welcome bot",
+        "moderator bot",
+        "shieldy",
+        "spambot",
+        "guardbot",
+        "security bot",
+        "captcha",
+    ]
+    for bn in bot_names:
+        if bn in d_lower:
+            return True
+
+    # 5. Message content checks (bot commands, bot signatures, welcome messages)
+    trimmed = msg_text.strip()
+    if trimmed.startswith(("/", "!", "#")) and len(trimmed.split()) <= 2:
+        return True
+
+    lower_text = trimmed.lower()
+    bot_signatures = [
+        "rose | protect your group",
+        "powered by @missrose",
+        "powered by miss rose",
+        "welcome to the group",
+        "bienvenido al grupo",
+        "bienvenue dans le groupe",
+        "has joined the group",
+        "se unió al grupo",
+        "a rejoint le groupe",
+        "click here to prove you are human",
+        "tap here to verify",
+        "press the button below",
+        "powered by combot",
+        "anti-flood trigger",
+    ]
+    for sig in bot_signatures:
+        if sig in lower_text:
+            return True
+
+    return False
 
 
 class IPTVScoutRequest(BaseModel):
     group_link: str
+    search_query: Optional[str] = "iptv"
     limit: Optional[int] = Field(200, ge=10, le=1000)
     filter_iptv_only: Optional[bool] = True
     custom_keywords: Optional[str] = None
     auto_translate: Optional[bool] = True
+    exclude_bots: Optional[bool] = True
+    search_mode: Optional[str] = "archive_search"  # "archive_search" or "recent"
+
 
 
 class MessageLead(BaseModel):
@@ -404,9 +490,49 @@ async def scan_telegram_group(
         group_id = str(getattr(target_entity, "id", ""))
         group_username = getattr(target_entity, "username", None)
 
-        # 3. Retrieve Messages
+        # 3. Retrieve Messages: Telegram MTProto server-side Search across full chat archive
         scan_limit = min(max(payload.limit or 200, 10), 1000)
-        messages = await client.get_messages(target_entity, limit=scan_limit)
+        messages_dict: Dict[int, Any] = {}
+
+        if payload.search_mode == "archive_search" or payload.filter_iptv_only:
+            # Build search queries: user's query, custom keywords, and core IPTV buyer terms
+            search_terms = []
+            if payload.search_query and payload.search_query.strip():
+                search_terms.append(payload.search_query.strip())
+            if payload.custom_keywords:
+                for k in payload.custom_keywords.split(","):
+                    k_clean = k.strip()
+                    if k_clean and k_clean not in search_terms:
+                        search_terms.append(k_clean)
+            if not search_terms:
+                search_terms = ["iptv", "m3u", "trial"]
+
+            # Query Telegram server for matching historical messages across the entire group
+            for term in search_terms[:4]:
+                try:
+                    res_msgs = await client.get_messages(target_entity, search=term, limit=scan_limit)
+                    for m in res_msgs:
+                        if m and getattr(m, "id", None) and m.id not in messages_dict:
+                            messages_dict[m.id] = m
+                except Exception as search_err:
+                    logger.warning(f"Telegram server search error for '{term}': {search_err}")
+
+            # If search returned few results or user requested recent, also grab recent messages
+            if len(messages_dict) < 30:
+                try:
+                    recent_msgs = await client.get_messages(target_entity, limit=min(scan_limit, 200))
+                    for m in recent_msgs:
+                        if m and getattr(m, "id", None) and m.id not in messages_dict:
+                            messages_dict[m.id] = m
+                except Exception as rec_err:
+                    logger.warning(f"Recent fetch note: {rec_err}")
+        else:
+            recent_msgs = await client.get_messages(target_entity, limit=scan_limit)
+            for m in recent_msgs:
+                if m and getattr(m, "id", None) and m.id not in messages_dict:
+                    messages_dict[m.id] = m
+
+        messages = sorted(messages_dict.values(), key=lambda m: getattr(m, "id", 0), reverse=True)
 
         leads: List[MessageLead] = []
         sender_cache: Dict[str, Dict[str, Any]] = {}
@@ -427,6 +553,7 @@ async def scan_telegram_group(
                     continue
 
                 # Sender lookup (cached for speed)
+                sender = None
                 sender_id_str = str(msg.sender_id) if msg.sender_id else ""
                 if sender_id_str and sender_id_str in sender_cache:
                     s_info = sender_cache[sender_id_str]
@@ -450,16 +577,28 @@ async def scan_telegram_group(
                                     "is_bot": bool(getattr(sender, "bot", False)),
                                 }
                             elif isinstance(sender, Channel) or isinstance(sender, Chat):
+                                is_broadcast = bool(getattr(sender, "broadcast", False))
                                 s_info = {
                                     "username": getattr(sender, "username", None),
                                     "display_name": getattr(sender, "title", "Channel"),
-                                    "is_bot": False,
+                                    "is_bot": is_broadcast,
                                 }
                     except Exception as e:
                         logger.debug(f"Sender lookup note: {e}")
 
                     if sender_id_str:
                         sender_cache[sender_id_str] = s_info
+
+                # 4. Strict Bot & Automated Chat Filtering
+                if payload.exclude_bots:
+                    if s_info.get("is_bot") or is_bot_user(
+                        sender,
+                        s_info.get("username"),
+                        s_info.get("display_name", ""),
+                        msg_text,
+                    ):
+                        continue
+
 
                 # Auto-Translation
                 translated_text = None

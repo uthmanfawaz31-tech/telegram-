@@ -44,7 +44,8 @@ import {
     Download,
     MessageSquare,
     Globe,
-    Languages
+    Languages,
+    Table as TableIcon
 } from "lucide-react";
 import Background from "@/components/Background";
 import FadeIn from "@/components/FadeIn";
@@ -3462,10 +3463,14 @@ interface IPTVScoutResponse {
 
 function IPTVScoutView() {
     const [groupLink, setGroupLink] = useState("");
+    const [searchTerm, setSearchTerm] = useState("iptv");
+    const [searchMode, setSearchMode] = useState<"archive_search" | "recent">("archive_search");
     const [limit, setLimit] = useState(200);
     const [filterIptvOnly, setFilterIptvOnly] = useState(true);
+    const [excludeBots, setExcludeBots] = useState(true);
     const [autoTranslate, setAutoTranslate] = useState(true);
     const [customKeywords, setCustomKeywords] = useState("");
+    const [viewMode, setViewMode] = useState<"table" | "cards">("table");
     const [scanning, setScanning] = useState(false);
     const [scanResult, setScanResult] = useState<IPTVScoutResponse | null>(null);
     const [error, setError] = useState("");
@@ -3516,10 +3521,13 @@ function IPTVScoutView() {
 
         const scanPayload = {
             group_link: groupLink.trim(),
+            search_query: searchTerm.trim() || "iptv",
+            search_mode: searchMode,
             limit: Number(limit) || 200,
             filter_iptv_only: filterIptvOnly,
             custom_keywords: customKeywords.trim() || null,
             auto_translate: autoTranslate,
+            exclude_bots: excludeBots,
         };
 
         const endpoints = [
@@ -3760,7 +3768,36 @@ function IPTVScoutView() {
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-1">
                         <div>
                             <label className="text-[11px] font-semibold text-slate-400 mb-1.5 block">
-                                Scan Depth (Messages)
+                                Search Mode
+                            </label>
+                            <select
+                                value={searchMode}
+                                onChange={(e) => setSearchMode(e.target.value as any)}
+                                disabled={scanning}
+                                className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-3 py-2 text-xs text-emerald-400 font-semibold focus:outline-none focus:border-emerald-500"
+                            >
+                                <option value="archive_search">Search Full Chat Archive (100+ leads)</option>
+                                <option value="recent">Recent Messages Stream Only</option>
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="text-[11px] font-semibold text-slate-400 mb-1.5 block">
+                                Search Keyword in Group
+                            </label>
+                            <input
+                                type="text"
+                                value={searchTerm}
+                                onChange={(e) => setSearchTerm(e.target.value)}
+                                placeholder="iptv"
+                                disabled={scanning}
+                                className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-mono"
+                            />
+                        </div>
+
+                        <div>
+                            <label className="text-[11px] font-semibold text-slate-400 mb-1.5 block">
+                                Lead Limit
                             </label>
                             <select
                                 value={limit}
@@ -3768,11 +3805,11 @@ function IPTVScoutView() {
                                 disabled={scanning}
                                 className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
                             >
-                                <option value={50}>Recent 50 Messages</option>
-                                <option value={100}>Recent 100 Messages</option>
-                                <option value={200}>Recent 200 Messages (Recommended)</option>
-                                <option value={500}>Recent 500 Messages</option>
-                                <option value={1000}>Recent 1000 Messages</option>
+                                <option value={50}>Up to 50 Leads</option>
+                                <option value={100}>Up to 100 Leads</option>
+                                <option value={200}>Up to 200 Leads (Recommended)</option>
+                                <option value={500}>Up to 500 Leads</option>
+                                <option value={1000}>Up to 1000 Leads</option>
                             </select>
                         </div>
 
@@ -3784,40 +3821,50 @@ function IPTVScoutView() {
                                 type="text"
                                 value={customKeywords}
                                 onChange={(e) => setCustomKeywords(e.target.value)}
-                                placeholder="e.g. firestick, uk sports, 4k"
+                                placeholder="e.g. firestick, m3u, trial"
                                 disabled={scanning}
                                 className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500"
                             />
                         </div>
+                    </div>
 
-                        <div className="flex items-end pb-2">
-                            <label className="flex items-center space-x-2 cursor-pointer text-xs text-slate-300">
-                                <input
-                                    type="checkbox"
-                                    checked={filterIptvOnly}
-                                    onChange={(e) => setFilterIptvOnly(e.target.checked)}
-                                    disabled={scanning}
-                                    className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
-                                />
-                                <span>Filter IPTV inquiries only</span>
-                            </label>
-                        </div>
+                    {/* Filter Checkboxes */}
+                    <div className="flex flex-wrap items-center gap-5 pt-2 border-t border-white/5">
+                        <label className="flex items-center space-x-2 cursor-pointer text-xs text-emerald-400 font-semibold">
+                            <input
+                                type="checkbox"
+                                checked={excludeBots}
+                                onChange={(e) => setExcludeBots(e.target.checked)}
+                                disabled={scanning}
+                                className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+                            />
+                            <span>Strictly Exclude Bots (No Miss Rose, Rose, Combot, etc.)</span>
+                        </label>
 
-                        <div className="flex items-end pb-2">
-                            <label className="flex items-center space-x-2 cursor-pointer text-xs text-sky-300 font-semibold">
-                                <input
-                                    type="checkbox"
-                                    checked={autoTranslate}
-                                    onChange={(e) => setAutoTranslate(e.target.checked)}
-                                    disabled={scanning}
-                                    className="w-4 h-4 accent-sky-500 rounded cursor-pointer"
-                                />
-                                <span className="flex items-center space-x-1">
-                                    <Globe className="w-3.5 h-3.5" />
-                                    <span>Auto-translate to English</span>
-                                </span>
-                            </label>
-                        </div>
+                        <label className="flex items-center space-x-2 cursor-pointer text-xs text-slate-300">
+                            <input
+                                type="checkbox"
+                                checked={filterIptvOnly}
+                                onChange={(e) => setFilterIptvOnly(e.target.checked)}
+                                disabled={scanning}
+                                className="w-4 h-4 accent-emerald-500 rounded cursor-pointer"
+                            />
+                            <span>Filter IPTV inquiries only</span>
+                        </label>
+
+                        <label className="flex items-center space-x-2 cursor-pointer text-xs text-sky-300 font-semibold">
+                            <input
+                                type="checkbox"
+                                checked={autoTranslate}
+                                onChange={(e) => setAutoTranslate(e.target.checked)}
+                                disabled={scanning}
+                                className="w-4 h-4 accent-sky-500 rounded cursor-pointer"
+                            />
+                            <span className="flex items-center space-x-1">
+                                <Globe className="w-3.5 h-3.5" />
+                                <span>Auto-translate to English</span>
+                            </span>
+                        </label>
                     </div>
                 </div>
 
@@ -3934,8 +3981,8 @@ function IPTVScoutView() {
                         </div>
                     )}
 
-                    {/* Filter Pills + Search Query */}
-                    <div className="blue-glass p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row md:items-center gap-3">
+                    {/* Filter Pills + Search Query + View Toggle */}
+                    <div className="blue-glass p-4 rounded-2xl border border-white/5 flex flex-col md:flex-row md:items-center justify-between gap-3">
                         <div className="flex items-center space-x-1.5 overflow-x-auto pb-1 md:pb-0 flex-shrink-0">
                             {[
                                 { id: "all", label: `All (${scanResult.total_leads})` },
@@ -3959,19 +4006,49 @@ function IPTVScoutView() {
                             ))}
                         </div>
 
-                        <div className="relative flex-1">
-                            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                            <input
-                                type="text"
-                                value={searchQuery}
-                                onChange={(e) => setSearchQuery(e.target.value)}
-                                placeholder="Search leads by username, keyword, language, or translated text…"
-                                className="w-full bg-slate-900/80 border border-white/10 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-all"
-                            />
+                        <div className="flex items-center space-x-3 flex-1">
+                            <div className="relative flex-1">
+                                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                                <input
+                                    type="text"
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                    placeholder="Search leads by username, chat text, or language…"
+                                    className="w-full bg-slate-900/80 border border-white/10 rounded-xl pl-9 pr-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition-all"
+                                />
+                            </div>
+
+                            {/* View Mode Toggle: Table vs Cards */}
+                            <div className="flex items-center space-x-1 bg-slate-900/90 p-1 rounded-xl border border-white/10 shrink-0">
+                                <button
+                                    onClick={() => setViewMode("table")}
+                                    className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                        viewMode === "table"
+                                            ? "bg-emerald-600 text-white shadow"
+                                            : "text-slate-400 hover:text-white"
+                                    }`}
+                                    title="View as structured table (Username, Chat, Time & Date)"
+                                >
+                                    <TableIcon className="w-3.5 h-3.5" />
+                                    <span>Table View</span>
+                                </button>
+                                <button
+                                    onClick={() => setViewMode("cards")}
+                                    className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                                        viewMode === "cards"
+                                            ? "bg-emerald-600 text-white shadow"
+                                            : "text-slate-400 hover:text-white"
+                                    }`}
+                                    title="View as cards"
+                                >
+                                    <Layers className="w-3.5 h-3.5" />
+                                    <span>Cards</span>
+                                </button>
+                            </div>
                         </div>
                     </div>
 
-                    {/* Leads Feed */}
+                    {/* Leads Table / Feed */}
                     {filteredLeads.length === 0 ? (
                         <div className="blue-glass p-12 rounded-3xl text-center text-slate-400 border border-white/5 space-y-2">
                             <Tv className="w-8 h-8 mx-auto text-slate-600 mb-2" />
@@ -3980,7 +4057,162 @@ function IPTVScoutView() {
                                 Try changing the category filter or clearing the search query.
                             </p>
                         </div>
+                    ) : viewMode === "table" ? (
+                        /* Tabular Form */
+                        <div className="overflow-x-auto rounded-2xl border border-white/10 bg-slate-900/70 shadow-2xl">
+                            <table className="w-full text-left border-collapse">
+                                <thead>
+                                    <tr className="border-b border-white/10 bg-slate-800/80 text-[11px] font-bold text-slate-300 uppercase tracking-wider">
+                                        <th className="py-3 px-3.5 text-center w-12 text-slate-400">#</th>
+                                        <th className="py-3 px-4 w-52">Username</th>
+                                        <th className="py-3 px-4">The Chat (Message)</th>
+                                        <th className="py-3 px-4 w-48 whitespace-nowrap">Time and Date</th>
+                                        <th className="py-3 px-3 w-28 text-center">Action</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-white/5 text-xs">
+                                    {filteredLeads.map((lead, idx) => {
+                                        const isHigh = lead.relevance_score === "High";
+                                        return (
+                                            <tr
+                                                key={lead.message_id}
+                                                className={`hover:bg-white/[0.03] transition-colors ${
+                                                    isHigh ? "bg-emerald-950/20" : ""
+                                                }`}
+                                            >
+                                                {/* # */}
+                                                <td className="py-3.5 px-3.5 text-center font-mono text-slate-500 font-bold align-top pt-4">
+                                                    {idx + 1}
+                                                </td>
+
+                                                {/* Username */}
+                                                <td className="py-3.5 px-4 align-top pt-3.5">
+                                                    <div className="space-y-1">
+                                                        {lead.username ? (
+                                                            <div className="flex items-center space-x-1.5">
+                                                                <a
+                                                                    href={`https://t.me/${lead.username}`}
+                                                                    target="_blank"
+                                                                    rel="noopener noreferrer"
+                                                                    className="text-emerald-400 hover:text-emerald-300 font-mono font-bold text-xs flex items-center space-x-1"
+                                                                >
+                                                                    <span>@{lead.username}</span>
+                                                                    <ExternalLink className="w-2.5 h-2.5" />
+                                                                </a>
+                                                                <button
+                                                                    onClick={() => copySingleUsername(lead.username)}
+                                                                    title="Copy username"
+                                                                    className="text-slate-500 hover:text-slate-300 p-0.5 rounded transition"
+                                                                >
+                                                                    <Copy className="w-3 h-3" />
+                                                                </button>
+                                                            </div>
+                                                        ) : (
+                                                            <span className="text-slate-500 font-mono text-[11px]">
+                                                                No @username
+                                                            </span>
+                                                        )}
+                                                        <div className="font-semibold text-white text-xs truncate max-w-[170px]">
+                                                            {lead.display_name}
+                                                        </div>
+                                                        {lead.sender_id && !lead.username && (
+                                                            <span className="text-[10px] text-slate-500 font-mono">
+                                                                ID: {lead.sender_id}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </td>
+
+                                                {/* The Chat */}
+                                                <td className="py-3.5 px-4 align-top pt-3.5 space-y-2">
+                                                    {lead.is_translated && lead.translated_text ? (
+                                                        <div className="space-y-1.5">
+                                                            <div className="flex items-center space-x-1.5">
+                                                                <span className="inline-flex items-center space-x-1 text-[10px] font-bold text-sky-400 bg-sky-500/10 border border-sky-500/20 px-2 py-0.5 rounded">
+                                                                    <Globe className="w-2.5 h-2.5" />
+                                                                    <span>English Translation ({lead.detected_language || "Translated"}):</span>
+                                                                </span>
+                                                            </div>
+                                                            <p className="text-sm text-slate-100 font-medium leading-relaxed bg-black/20 p-2.5 rounded-xl border border-white/5">
+                                                                {lead.translated_text}
+                                                            </p>
+                                                            <div>
+                                                                <button
+                                                                    onClick={() => toggleOriginal(lead.message_id)}
+                                                                    className="text-[11px] text-slate-400 hover:text-slate-200 underline font-medium"
+                                                                >
+                                                                    {showOriginalMap[lead.message_id] ? "Hide Original" : "Show Original Text"}
+                                                                </button>
+                                                                {showOriginalMap[lead.message_id] && (
+                                                                    <p className="mt-1 text-xs text-slate-400 bg-black/40 p-2 rounded-lg border border-white/5 font-mono italic">
+                                                                        {lead.message_text}
+                                                                    </p>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        <p className="text-sm text-slate-200 leading-relaxed font-sans whitespace-pre-wrap bg-black/20 p-2.5 rounded-xl border border-white/5">
+                                                            {lead.message_text}
+                                                        </p>
+                                                    )}
+
+                                                    {/* Keywords & Intent */}
+                                                    <div className="flex items-center space-x-1.5 flex-wrap gap-y-1 pt-1">
+                                                        {lead.intent_category && (
+                                                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/30 text-emerald-400">
+                                                                {lead.intent_category}
+                                                            </span>
+                                                        )}
+                                                        {lead.matched_keywords?.map((kw, i) => (
+                                                            <span
+                                                                key={i}
+                                                                className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-white/5 text-slate-400 border border-white/10"
+                                                            >
+                                                                #{kw}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                </td>
+
+                                                {/* Time and Date */}
+                                                <td className="py-3.5 px-4 align-top pt-3.5 whitespace-nowrap">
+                                                    <div className="flex items-center space-x-1.5 text-slate-300 font-mono text-xs">
+                                                        <Clock className="w-3.5 h-3.5 text-slate-500 flex-shrink-0" />
+                                                        <span>{lead.date_str}</span>
+                                                    </div>
+                                                </td>
+
+                                                {/* Action */}
+                                                <td className="py-3.5 px-3 align-top pt-3.5 text-center whitespace-nowrap">
+                                                    <div className="flex items-center justify-center space-x-1.5">
+                                                        <button
+                                                            onClick={() => copyMessageText(lead.translated_text || lead.message_text)}
+                                                            className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white transition"
+                                                            title="Copy chat message"
+                                                        >
+                                                            <Copy className="w-3.5 h-3.5" />
+                                                        </button>
+                                                        {lead.username && (
+                                                            <a
+                                                                href={`https://t.me/${lead.username}`}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="p-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 transition"
+                                                                title="Open Telegram Profile"
+                                                            >
+                                                                <MessageSquare className="w-3.5 h-3.5" />
+                                                            </a>
+                                                        )}
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
                     ) : (
+                        /* Card View */
                         <div className="space-y-3">
                             {filteredLeads.map((lead) => {
                                 const isHigh = lead.relevance_score === "High";
